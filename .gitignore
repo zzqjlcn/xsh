@@ -1,0 +1,5 @@
+dist
+*.test
+coverage.out
+xsh.exe
+xsh-linux-*
