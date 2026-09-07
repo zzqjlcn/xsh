@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zzqjlcn/xsh/internal/webui"
@@ -18,6 +20,7 @@ import (
 func runWebCommand(arguments []string, output io.Writer) error {
 	flags := flag.NewFlagSet("web", flag.ContinueOnError)
 	flags.SetOutput(output)
+	host := flags.String("host", "127.0.0.1", "Web UI listen host")
 	port := flags.Int("port", 8080, "local Web UI port (0 selects a free port)")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -25,14 +28,14 @@ func runWebCommand(arguments []string, output io.Writer) error {
 		}
 		return err
 	}
-	if flags.NArg() != 0 || *port < 0 || *port > 65535 {
-		return errors.New("usage: xsh web [--port 0-65535]")
+	if flags.NArg() != 0 || strings.TrimSpace(*host) == "" || *port < 0 || *port > 65535 {
+		return errors.New("usage: xsh web [--host address] [--port 0-65535]")
 	}
-	handler, err := webui.New()
+	handler, err := webui.NewForHost(*host)
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", *port))
+	listener, err := net.Listen("tcp", net.JoinHostPort(*host, strconv.Itoa(*port)))
 	if err != nil {
 		return fmt.Errorf("start Web UI: %w", err)
 	}

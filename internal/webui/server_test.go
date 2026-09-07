@@ -12,6 +12,7 @@ import (
 )
 
 func TestHostLifecycle(t *testing.T) {
+	const alias = "xsh-webui-host-lifecycle-test"
 	t.Setenv("XSH_CONFIG_HOME", t.TempDir())
 	createTestVault(t, "test-password")
 	handler, err := New()
@@ -40,7 +41,7 @@ func TestHostLifecycle(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &initial); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"host":{"name":"dev","hostname":"127.0.0.1","user":"tester","port":22,"auth_type":"auto","save_password":true,"last_login":123}}`
+	body := `{"host":{"name":"` + alias + `","hostname":"127.0.0.1","user":"tester","port":22,"auth_type":"password","save_password":true,"last_login":123},"password":"saved-password"}`
 	if w := request("POST", body, ""); w.Code != 403 {
 		t.Fatalf("missing token: %d", w.Code)
 	}
@@ -48,32 +49,29 @@ func TestHostLifecycle(t *testing.T) {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
 	store, _ := config.Load()
-	if host := store.Find("dev"); host == nil || host.SavePassword || host.LastLogin != 0 {
+	if host := store.Find(alias); host == nil || !host.SavePassword || host.LastLogin != 0 {
 		t.Fatalf("invalid created host: %+v", host)
+	}
+	if password, err := credential.GetPassword(alias, nil); err != nil || password != "saved-password" {
+		t.Fatalf("saved password = %q, err=%v", password, err)
 	}
 	if w := request("POST", body, initial.Token); w.Code != 400 {
 		t.Fatalf("duplicate: %d", w.Code)
 	}
-	store.Hosts[0].SavePassword = true
 	store.Hosts[0].LastLogin = 456
 	if err := store.Save(); err != nil {
 		t.Fatal(err)
 	}
-	update := `{"original":"dev","host":{"name":"renamed","hostname":"example.test","user":"tester","port":2222,"auth_type":"auto"}}`
+	update := `{"original":"` + alias + `","host":{"name":"renamed","hostname":"example.test","user":"tester","port":2222,"auth_type":"password","save_password":true}}`
 	if w := request("PUT", update, initial.Token); w.Code != 204 {
 		t.Fatalf("update: %d %s", w.Code, w.Body.String())
 	}
 	store, _ = config.Load()
-	host := store.Find("dev")
+	host := store.Find(alias)
 	if host == nil || host.Hostname != "example.test" || !host.SavePassword || host.LastLogin != 456 {
 		t.Fatalf("invalid updated host: %+v", host)
 	}
-	// Avoid invoking the real credential store in this test.
-	host.SavePassword = false
-	if err := store.Save(); err != nil {
-		t.Fatal(err)
-	}
-	if w := request("DELETE", `{"original":"dev"}`, initial.Token); w.Code != 204 {
+	if w := request("DELETE", `{"original":"`+alias+`"}`, initial.Token); w.Code != 204 {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
 	store, _ = config.Load()
@@ -114,6 +112,21 @@ func TestRequestBoundaries(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		if w.Code != test.code {
 			t.Errorf("%s %s: got %d want %d", test.method, test.path, w.Code, test.code)
+		}
+	}
+}
+
+func TestRemoteHostAccess(t *testing.T) {
+	handler, err := NewForHost("0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"http://192.168.1.20:23456/", "http://server.example:23456/"} {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s: got %d want %d", target, w.Code, http.StatusOK)
 		}
 	}
 }

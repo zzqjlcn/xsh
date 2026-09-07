@@ -7,7 +7,7 @@ import (
 )
 
 func TestWebCommandFlags(t *testing.T) {
-	for _, args := range [][]string{{"--port", "-1"}, {"--port", "65536"}, {"unexpected"}, {"--unknown"}} {
+	for _, args := range [][]string{{"--host", ""}, {"--port", "-1"}, {"--port", "65536"}, {"unexpected"}, {"--unknown"}} {
 		if err := runWebCommand(args, &bytes.Buffer{}); err == nil {
 			t.Errorf("accepted invalid arguments %v", args)
 		}
@@ -16,7 +16,7 @@ func TestWebCommandFlags(t *testing.T) {
 	if err := runWebCommand([]string{"--help"}, &output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "port") {
-		t.Fatal("missing port help")
+	if !strings.Contains(output.String(), "host") || !strings.Contains(output.String(), "port") {
+		t.Fatal("missing host or port help")
 	}
 }

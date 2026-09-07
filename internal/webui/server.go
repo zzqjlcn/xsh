@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -25,11 +26,16 @@ type server struct {
 	token     string
 	session   string
 	sessionMu sync.RWMutex
+	remote    bool
 }
 
 const sessionCookie = "xsh_web_session"
 
 func New() (http.Handler, error) {
+	return NewForHost("127.0.0.1")
+}
+
+func NewForHost(bindHost string) (http.Handler, error) {
 	var tokenSecret, sessionSecret [32]byte
 	if _, err := rand.Read(tokenSecret[:]); err != nil {
 		return nil, err
@@ -37,7 +43,9 @@ func New() (http.Handler, error) {
 	if _, err := rand.Read(sessionSecret[:]); err != nil {
 		return nil, err
 	}
-	s := &server{token: hex.EncodeToString(tokenSecret[:]), session: hex.EncodeToString(sessionSecret[:])}
+	bindIP := net.ParseIP(bindHost)
+	localOnly := strings.EqualFold(bindHost, "localhost") || bindIP != nil && bindIP.IsLoopback()
+	s := &server{token: hex.EncodeToString(tokenSecret[:]), session: hex.EncodeToString(sessionSecret[:]), remote: !localOnly}
 	return http.HandlerFunc(s.serve), nil
 }
 
@@ -46,8 +54,10 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	host, _, err := net.SplitHostPort(r.Host)
-	if err != nil || host != "127.0.0.1" {
-		http.Error(w, "use the printed 127.0.0.1 address", http.StatusForbidden)
+	hostIP := net.ParseIP(host)
+	loopbackHost := strings.EqualFold(host, "localhost") || hostIP != nil && hostIP.IsLoopback()
+	if err != nil || !s.remote && !loopbackHost {
+		http.Error(w, "use the printed loopback address", http.StatusForbidden)
 		return
 	}
 	if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
@@ -226,6 +236,7 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Original string         `json:"original"`
 		Host     config.SSHHost `json:"host"`
+		Password string         `json:"password"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	decoder := json.NewDecoder(r.Body)
@@ -245,14 +256,43 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPost:
-		input.Host.SavePassword = false
+		if input.Host.SavePassword && input.Host.AuthType != config.AuthPassword {
+			http.Error(w, "password can only be saved for password authentication", 400)
+			return
+		}
+		if input.Host.SavePassword && input.Password == "" {
+			http.Error(w, "host password is required when saving it", 400)
+			return
+		}
 		input.Host.LastLogin = 0
+		if err = input.Host.Validate(); err == nil && store.Find(input.Host.Name) != nil {
+			err = fmt.Errorf("host %q already exists", input.Host.Name)
+		}
+		if err == nil && input.Host.SavePassword {
+			err = credential.SetVaultPassword(input.Host.Name, input.Password, nil)
+		}
+		if err != nil {
+			break
+		}
 		err = store.Add(input.Host)
 	case http.MethodPut:
 		// Credentials are keyed by alias; keep the alias stable in this editor.
 		input.Host.Name = current.Name
-		input.Host.SavePassword = current.SavePassword
 		input.Host.LastLogin = current.LastLogin
+		wantSavedPassword := input.Host.AuthType == config.AuthPassword && input.Host.SavePassword
+		if wantSavedPassword && input.Password == "" && !current.SavePassword {
+			http.Error(w, "host password is required when saving it", 400)
+			return
+		}
+		if wantSavedPassword && input.Password != "" {
+			err = credential.SetVaultPassword(current.Name, input.Password, nil)
+		} else if !wantSavedPassword && current.SavePassword {
+			err = credential.DeletePassword(current.Name, nil)
+		}
+		input.Host.SavePassword = wantSavedPassword
+		if err != nil {
+			break
+		}
 		err = store.Update(current.Name, input.Host)
 	case http.MethodDelete:
 		if current.SavePassword {

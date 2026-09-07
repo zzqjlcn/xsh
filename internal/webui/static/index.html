@@ -172,8 +172,19 @@
             <input class="input" id="f-key" name="identity_file" placeholder="~/.ssh/id_ed25519" autocomplete="off">
             <p class="hint">密钥保存在本机；<code>known_hosts</code> 指纹校验仍然生效。</p>
           </div>
-          <div class="field wide" id="row-passhint" hidden>
-            <p class="hint">密码不会写入 hosts 配置——连接时若密码本未保存，将临时询问。</p>
+          <div class="field wide password-save" id="row-passhint" hidden>
+            <label class="check-row" for="f-save-password">
+              <input id="f-save-password" name="save_password" type="checkbox">
+              <span>保存到加密密码本</span>
+            </label>
+            <label for="f-password">主机密码</label>
+            <div class="password-wrap">
+              <input class="input" id="f-password" name="password" type="password" autocomplete="new-password" placeholder="勾选保存后输入密码" disabled>
+              <button type="button" class="eye" data-eye="f-password" aria-label="显示/隐藏密码">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+              </button>
+            </div>
+            <p class="hint">使用已登录的 master password 加密保存，不会写入 hosts 配置。</p>
           </div>
           <div class="field">
             <label for="f-jump">跳板主机</label>
@@ -256,7 +267,7 @@
     </div>
     <div class="dlg-body">
       <div class="confirm-body">
-        <p class="hint">将从主机列表中移除以下配置；已保存的凭据不受影响。</p>
+        <p class="hint">将从主机列表中移除以下配置，并删除其已保存的凭据。</p>
         <span class="target" id="confirm-target"></span>
       </div>
     </div>

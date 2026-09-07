@@ -38,11 +38,12 @@ On Linux, `xsh` first uses a Secret Service provider such as GNOME Keyring or KW
 ```shell
 xsh web
 xsh web --port 9090
+xsh web --host 0.0.0.0 --port 23456
 ```
 
-Open the printed address (default `http://127.0.0.1:8080`) in your browser. Press Ctrl+C to stop. `--port 0` selects a free port. The UI is embedded in the executable, needs no separate frontend installation, and listens only on the local machine. Sign in with the encrypted password-vault master password; this unlocks saved credentials for the lifetime of the authenticated Web session. On first use, when no encrypted password vault exists, the login page asks you to create and confirm its master password before entering the terminal workspace.
+Open the printed address (default `http://127.0.0.1:8080`) in your browser. Press Ctrl+C to stop. `--port 0` selects a free port. The UI is embedded in the executable and needs no separate frontend installation. It listens only on the local machine by default; pass `--host 0.0.0.0` to accept connections from other machines. Sign in with the encrypted password-vault master password; this unlocks saved credentials for the lifetime of the authenticated Web session. On first use, when no encrypted password vault exists, the login page asks you to create and confirm its master password before entering the terminal workspace.
 
-The terminal workspace is the Web UI's main screen. The host list opens in a right-side drawer, while adding and editing hosts uses dialogs. Multiple terminal tabs can stay connected at the same time, and closing a tab disconnects only that SSH session. Existing aliases are read-only when editing to preserve saved credentials. A host password entered in the connection dialog is used for that connection only and is not saved. After Web login, encrypted-vault credentials are reused without requesting the master password again.
+The terminal workspace is the Web UI's main screen. The host list opens in a right-side drawer, while adding and editing hosts uses dialogs. Multiple terminal tabs can stay connected at the same time, and closing a tab disconnects only that SSH session. Existing aliases are read-only when editing to preserve saved credentials. When creating or editing a password-authenticated host, its password can be saved in the encrypted vault; a password entered only in the connection dialog remains temporary. After Web login, encrypted-vault credentials are reused without requesting the master password again.
 
 The embedded terminal renders the standard 16-color palette, ANSI 256-color sequences, bold bright colors, and 24-bit truecolor sequences. Remote applications receive an `xterm-256color` PTY; xsh also requests `COLORTERM=truecolor` when the SSH server permits that environment variable.
 
