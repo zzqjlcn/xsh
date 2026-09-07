@@ -3,16 +3,19 @@ package copyui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/zzqjlcn/xsh/internal/config"
+	"github.com/zzqjlcn/xsh/internal/copyhistory"
 	"github.com/zzqjlcn/xsh/internal/filecopy"
 )
 
 func TestWizardBuildsLocalToRemoteRequest(t *testing.T) {
-	model := NewWizard([]config.SSHHost{{Name: "dev", Hostname: "10.0.0.1", User: "root", Port: 22}})
+	model := NewWizard([]config.SSHHost{{Name: "dev", Hostname: "10.0.0.1", User: "root", Port: 22}}, nil)
 	model = updateKey(model, tea.KeyEnter)
 	model = typeText(model, "/tmp/source")
 	model = updateKey(model, tea.KeyEnter)
@@ -46,7 +49,7 @@ func TestTabCyclesPathCandidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "alpha.txt"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	model := NewWizard(nil)
+	model := NewWizard(nil, nil)
 	model = updateKey(model, tea.KeyEnter)
 	model = typeText(model, filepath.Join(root, "alp"))
 	model = updateKey(model, tea.KeyTab)
@@ -58,6 +61,18 @@ func TestTabCyclesPathCandidates(t *testing.T) {
 	second := filepath.Join(root, "alpha.txt")
 	if model.path.Value() != second {
 		t.Fatalf("second Tab = %q, want %q", model.path.Value(), second)
+	}
+}
+
+func TestWizardShowsCopyHistory(t *testing.T) {
+	model := NewWizard(nil, []copyhistory.Entry{{
+		Source:      "local:/tmp/source",
+		Destination: "dev:/tmp/destination",
+		CompletedAt: time.Date(2026, 8, 21, 10, 30, 0, 0, time.Local),
+	}})
+	view := model.View()
+	if !strings.Contains(view, "Recent copies (last 10)") || !strings.Contains(view, "local:/tmp/source → dev:/tmp/destination") {
+		t.Fatalf("history missing from wizard:\n%s", view)
 	}
 }
 

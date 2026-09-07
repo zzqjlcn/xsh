@@ -28,7 +28,15 @@ type Connection struct {
 }
 
 func Dial(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver) (*Connection, error) {
-	client, jump, err := dial(host, password, resolve, resolvePassword)
+	callback, err := hostKeyCallback()
+	if err != nil {
+		return nil, err
+	}
+	return DialWithHostKeyCallback(host, password, resolve, resolvePassword, callback)
+}
+
+func DialWithHostKeyCallback(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver, callback ssh.HostKeyCallback) (*Connection, error) {
+	client, jump, err := dial(host, password, resolve, resolvePassword, callback)
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +104,8 @@ func Connect(host config.SSHHost, password string, resolve HostResolver, resolve
 	return err
 }
 
-func dial(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver) (*ssh.Client, *ssh.Client, error) {
-	cfg, err := clientConfig(host, password)
+func dial(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver, callback ssh.HostKeyCallback) (*ssh.Client, *ssh.Client, error) {
+	cfg, err := clientConfig(host, password, callback)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -115,7 +123,7 @@ func dial(host config.SSHHost, password string, resolve HostResolver, resolvePas
 	if err != nil {
 		return nil, nil, err
 	}
-	jumpCfg, err := clientConfig(*jumpHost, jumpPassword)
+	jumpCfg, err := clientConfig(*jumpHost, jumpPassword, callback)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ProxyJump %s: %w", jumpHost.Name, err)
 	}
@@ -138,17 +146,13 @@ func dial(host config.SSHHost, password string, resolve HostResolver, resolvePas
 	return ssh.NewClient(conn, chans, reqs), jump, nil
 }
 
-func clientConfig(host config.SSHHost, password string) (*ssh.ClientConfig, error) {
+func clientConfig(host config.SSHHost, password string, callback ssh.HostKeyCallback) (*ssh.ClientConfig, error) {
 	auth, err := authMethods(host, password)
 	if err != nil {
 		return nil, err
 	}
 	if len(auth) == 0 {
 		return nil, errors.New("no usable authentication method configured")
-	}
-	callback, err := hostKeyCallback()
-	if err != nil {
-		return nil, err
 	}
 	return &ssh.ClientConfig{User: host.User, Auth: auth, HostKeyCallback: callback, Timeout: 12 * time.Second}, nil
 }

@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/pkg/sftp"
 
 	"github.com/zzqjlcn/xsh/internal/config"
+	"github.com/zzqjlcn/xsh/internal/copyhistory"
 	"github.com/zzqjlcn/xsh/internal/copyui"
 	"github.com/zzqjlcn/xsh/internal/credential"
 	"github.com/zzqjlcn/xsh/internal/filecopy"
@@ -21,16 +21,45 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "xsh:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(arguments []string) error {
 	store, err := config.Load()
 	if err != nil {
 		return err
+	}
+	if len(arguments) > 0 {
+		switch arguments[0] {
+		case "web":
+			return runWebCommand(arguments[1:], os.Stdout)
+		case "cp":
+			return runCopyCommand(store, arguments[1:], os.Stdout)
+		case "completion":
+			if len(arguments) != 2 {
+				return errors.New("usage: xsh completion <bash|zsh|powershell>")
+			}
+			script, err := completionScript(arguments[1])
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(os.Stdout, script)
+			return nil
+		case "__complete-hosts":
+			prefix := ""
+			if len(arguments) > 1 {
+				prefix = arguments[1]
+			}
+			for _, candidate := range completeHosts(store, prefix) {
+				fmt.Fprintln(os.Stdout, candidate)
+			}
+			return nil
+		default:
+			return fmt.Errorf("unknown command %q (available: cp, web, completion)", arguments[0])
+		}
 	}
 
 	for {
@@ -199,42 +228,14 @@ func connect(store *config.Store, host config.SSHHost) error {
 }
 
 func copyFiles(store *config.Store) error {
-	resolver, passwordResolver := sshResolvers(store)
-	sessions := make(map[string]*remoteCopySession)
-	defer func() {
-		for _, session := range sessions {
-			session.close()
-		}
-	}()
-	prepare := func(endpoint copyui.Endpoint) (*filecopy.FileSystem, error) {
-		if endpoint.IsLocal() {
-			return filecopy.LocalFileSystem(), nil
-		}
-		if session := sessions[endpoint.HostName]; session != nil {
-			return filecopy.RemoteFileSystem(endpoint.HostName, session.sftp), nil
-		}
-		host := store.Find(endpoint.HostName)
-		if host == nil {
-			return nil, fmt.Errorf("host %q not found", endpoint.HostName)
-		}
-		password, err := passwordForHost(*host, fmt.Sprintf("Password for %s (not saved): ", host.Name))
-		if err != nil {
-			return nil, err
-		}
-		connection, err := sshclient.Dial(*host, password, resolver, passwordResolver)
-		if err != nil {
-			return nil, fmt.Errorf("connect %s: %w", host.Name, err)
-		}
-		sftpClient, err := sftp.NewClient(connection.Client)
-		if err != nil {
-			connection.Close()
-			return nil, fmt.Errorf("start SFTP on %s: %w", host.Name, err)
-		}
-		sessions[endpoint.HostName] = &remoteCopySession{connection: connection, sftp: sftpClient}
-		return filecopy.RemoteFileSystem(endpoint.HostName, sftpClient), nil
+	history, err := copyhistory.Load()
+	if err != nil {
+		return fmt.Errorf("load copy history: %w", err)
 	}
+	runtime := newCopyRuntime(store)
+	defer runtime.Close()
 
-	wizard := copyui.NewWizard(store.Hosts)
+	wizard := copyui.NewWizard(store.Hosts, history)
 	var copyRequest *copyui.Request
 	for {
 		wizardProgram := tea.NewProgram(wizard, tea.WithAltScreen())
@@ -252,7 +253,7 @@ func copyFiles(store *config.Store) error {
 			return nil
 		}
 		if result.PrepareEndpoint != nil {
-			files, err := prepare(*result.PrepareEndpoint)
+			files, err := runtime.prepare(*result.PrepareEndpoint)
 			if err != nil {
 				return err
 			}
@@ -266,37 +267,25 @@ func copyFiles(store *config.Store) error {
 		return nil
 	}
 
-	source, err := prepare(copyRequest.Source)
-	if err != nil {
-		return err
-	}
-	destination, err := prepare(copyRequest.Destination)
-	if err != nil {
-		return err
-	}
-	copier := filecopy.Copier{Source: source, Destination: destination}
 	progress := copyui.NewProgress(func(ctx context.Context, report filecopy.Reporter) error {
-		return copier.Copy(ctx, copyRequest.SourcePath, copyRequest.DestinationPath, report)
+		return runtime.copy(ctx, *copyRequest, report)
 	})
 	progressProgram := tea.NewProgram(progress, tea.WithAltScreen())
 	final, err := progressProgram.Run()
 	if err != nil {
 		return err
 	}
-	if _, ok := final.(copyui.ProgressModel); !ok {
+	progressResult, ok := final.(copyui.ProgressModel)
+	if !ok {
 		return errors.New("unexpected copy progress state")
 	}
+	if progressResult.Result() != nil {
+		return nil
+	}
+	if err := recordCopy(*copyRequest); err != nil {
+		return fmt.Errorf("copy completed, but history could not be saved: %w", err)
+	}
 	return nil
-}
-
-type remoteCopySession struct {
-	connection *sshclient.Connection
-	sftp       *sftp.Client
-}
-
-func (s *remoteCopySession) close() {
-	_ = s.sftp.Close()
-	_ = s.connection.Close()
 }
 
 func sshResolvers(store *config.Store) (sshclient.HostResolver, sshclient.PasswordResolver) {

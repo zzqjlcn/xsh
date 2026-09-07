@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/zzqjlcn/xsh/internal/config"
+	"github.com/zzqjlcn/xsh/internal/copyhistory"
 	"github.com/zzqjlcn/xsh/internal/filecopy"
 )
 
@@ -66,6 +67,7 @@ type Wizard struct {
 	candidateValue string
 	width          int
 	height         int
+	history        []copyhistory.Entry
 }
 
 var (
@@ -74,7 +76,7 @@ var (
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
-func NewWizard(hosts []config.SSHHost) Wizard {
+func NewWizard(hosts []config.SSHHost, history []copyhistory.Entry) Wizard {
 	copyHosts := append([]config.SSHHost(nil), hosts...)
 	sort.Slice(copyHosts, func(i, j int) bool {
 		return strings.ToLower(copyHosts[i].Name) < strings.ToLower(copyHosts[j].Name)
@@ -103,6 +105,7 @@ func NewWizard(hosts []config.SSHHost) Wizard {
 		table:     t,
 		path:      input,
 		files:     map[string]*filecopy.FileSystem{"": filecopy.LocalFileSystem()},
+		history:   append([]copyhistory.Entry(nil), history...),
 	}
 }
 
@@ -113,9 +116,9 @@ func (m Wizard) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = message.Width, message.Height
-		height := message.Height - 10
-		if height < 5 {
-			height = 5
+		height := message.Height - 10 - len(m.history)
+		if height < 3 {
+			height = 3
 		}
 		m.table.SetHeight(height)
 	case tea.KeyMsg:
@@ -167,7 +170,7 @@ func (m Wizard) View() string {
 	var body string
 	switch m.step {
 	case stepSource:
-		body = "Select source\n\n" + m.table.View()
+		body = m.renderHistory() + "\n\nSelect source\n\n" + m.table.View()
 	case stepSourcePath:
 		body = fmt.Sprintf("Source: %s\n\nSource path\n%s%s", accentStyle.Render(m.request.Source.Label()), m.path.View(), m.renderPathError())
 	case stepDestination:
@@ -299,6 +302,49 @@ func (m Wizard) renderPathError() string {
 		return ""
 	}
 	return "\n" + warnStyle.Render(m.pathError)
+}
+
+func (m Wizard) renderHistory() string {
+	lines := []string{mutedStyle.Render("Recent copies (last 10)")}
+	if len(m.history) == 0 {
+		return strings.Join(append(lines, "  No copy history"), "\n")
+	}
+	limit := len(m.history)
+	if limit > copyhistory.Limit {
+		limit = copyhistory.Limit
+	}
+	for index, entry := range m.history[:limit] {
+		when := entry.CompletedAt.Local().Format("01-02 15:04")
+		width := m.width
+		if width <= 0 {
+			width = 80
+		}
+		locationWidth := (width - 22) / 2
+		if locationWidth < 10 {
+			locationWidth = 10
+		}
+		lines = append(lines, fmt.Sprintf(
+			"%2d. %s  %s → %s",
+			index+1,
+			when,
+			shortenMiddle(entry.Source, locationWidth),
+			shortenMiddle(entry.Destination, locationWidth),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func shortenMiddle(value string, width int) string {
+	characters := []rune(value)
+	if len(characters) <= width {
+		return value
+	}
+	if width <= 1 {
+		return "…"
+	}
+	left := (width - 1) / 2
+	right := width - left - 1
+	return string(characters[:left]) + "…" + string(characters[len(characters)-right:])
 }
 
 func (m Wizard) selectedEndpoint() Endpoint {

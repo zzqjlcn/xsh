@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.4
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/pkg/sftp v1.13.10
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/crypto v0.41.0

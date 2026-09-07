@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,62 @@ func VaultExists() bool {
 	}
 	_, err = os.Stat(path)
 	return err == nil
+}
+
+// UnlockVault verifies the existing vault master password and keeps the vault
+// unlocked for subsequent credential reads in this process.
+func UnlockVault(password string) error {
+	if !VaultExists() {
+		return errors.New("encrypted password vault not found; create it from the terminal UI first")
+	}
+	currentVault.Lock()
+	defer currentVault.Unlock()
+	path, err := vaultPath()
+	if err != nil {
+		return err
+	}
+	if currentVault.key != nil && currentVault.path == path {
+		candidate := deriveKey(password, currentVault.salt)
+		defer clearBytes(candidate)
+		if subtle.ConstantTimeCompare(candidate, currentVault.key) != 1 {
+			return ErrInvalidMasterPassword
+		}
+		return nil
+	}
+	return currentVault.unlock(func(string) (string, error) { return password, nil }, false)
+}
+
+// CreateVault creates and unlocks an empty encrypted password vault.
+func CreateVault(password string) error {
+	if len([]rune(password)) < 8 {
+		return ErrMasterPasswordTooShort
+	}
+	currentVault.Lock()
+	defer currentVault.Unlock()
+	path, err := vaultPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return errors.New("encrypted password vault already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := currentVault.unlock(func(string) (string, error) { return password, nil }, true); err != nil {
+		return err
+	}
+	return currentVault.save()
+}
+
+// LockVault clears the decrypted password vault from process memory.
+func LockVault() {
+	currentVault.Lock()
+	defer currentVault.Unlock()
+	clearBytes(currentVault.key)
+	currentVault.path = ""
+	currentVault.salt = nil
+	currentVault.key = nil
+	currentVault.passwords = nil
 }
 
 func SetVaultPassword(alias, password string, prompt PasswordPrompt) error {

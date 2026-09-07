@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>xsh · Web Terminal</title>
+<link rel="icon" type="image/png" href="/favicon.png?v=4">
+<link rel="icon" href="/favicon.ico?v=4" type="image/x-icon">
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/style.css">
+<script src="/vendor/xterm.js" defer></script>
+<script src="/vendor/addon-fit.js" defer></script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+
+<!-- ================= 登录 / 解锁密码本（真实流程，观感对齐原型） ================= -->
+<dialog id="master-login" aria-labelledby="master-title">
+  <div class="login-card">
+    <div class="login-logo"><img class="brand-mark brand-mark-login" src="/logo.png?v=4" alt=""></div>
+    <h1 class="login-title" id="master-title">xsh Web</h1>
+    <p class="copy" id="master-copy">输入密码本（encrypted vault）的 master password 以解锁已保存的凭据。</p>
+    <form id="master-form" novalidate>
+      <div class="field">
+        <label for="master-password">Master password</label>
+        <div class="password-wrap">
+          <input class="input" id="master-password" type="password" autocomplete="current-password" placeholder="••••••••••••" required>
+          <button type="button" class="eye" data-eye="master-password" aria-label="显示/隐藏密码">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field" id="master-confirm-row" hidden>
+        <label for="master-confirm">再次输入确认</label>
+        <input class="input" id="master-confirm" type="password" autocomplete="new-password" placeholder="••••••••••••">
+      </div>
+      <p class="login-error" id="master-error" role="alert"></p>
+      <button class="btn btn-primary btn-lg" type="submit" id="master-submit">解锁终端</button>
+    </form>
+    <div class="login-foot">
+      <span class="eyebrow">VAULT · AES-256-GCM</span>
+    </div>
+  </div>
+</dialog>
+
+<!-- ================= 应用主体 ================= -->
+<div id="app" hidden>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img class="brand-mark brand-mark-nav" src="/logo.png?v=4" alt="">
+      <span class="brand-word">xsh</span>
+      <span class="brand-tag">WEB</span>
+      <span class="brand-divider"></span>
+    </a>
+
+    <div id="tabstrip" role="tablist" aria-label="SSH 终端会话"></div>
+
+    <div class="top-actions">
+      <span class="readout">LOCAL · <b>ANSI-256</b> · TRUECOLOR</span>
+      <button class="icon-btn" id="theme-toggle" title="切换深色 / 亮色主题" aria-label="切换主题" aria-pressed="false"></button>
+      <button class="btn btn-primary" id="btn-open-hosts" title="主机列表 (q)" aria-label="主机列表">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 4v5M16 14h.01M16 17h.01"/></svg>
+        主机 <span class="count-chip" id="host-count-chip">0</span>
+      </button>
+      <button class="icon-btn hide-n" id="btn-lock" title="锁定 Web UI（返回登录）" aria-label="锁定">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="9" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <!-- 空状态 -->
+    <div class="empty" id="empty-state">
+      <img class="brand-mark brand-mark-empty" src="/logo.png?v=4" alt="">
+      <h1>选择一台主机，开始你的会话</h1>
+      <p class="lead">终端会话以标签页保留，可同时保持多台服务器的连接。新建、编辑与搜索都在右侧主机面板完成。</p>
+      <div class="empty-actions">
+        <button class="btn btn-primary btn-lg" id="empty-open">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 4v5"/></svg>
+          打开主机列表
+        </button>
+        <span class="kbd">快捷键 q 列表 · a 新增</span>
+      </div>
+      <div class="empty-recent" id="recent-wrap" hidden>
+        <span class="lbl">最近使用</span>
+        <div class="chip-row" id="recent-chips"></div>
+      </div>
+    </div>
+    <!-- 终端面板区 -->
+    <div id="pane-area"></div>
+  </div>
+</div>
+
+<!-- ================= 主机抽屉 ================= -->
+<div class="backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="host-drawer" aria-hidden="true" aria-label="主机列表">
+  <div class="drawer-head">
+    <div>
+      <p class="eyebrow">CONNECTIONS</p>
+      <h2>主机</h2>
+    </div>
+    <button class="icon-btn" id="drawer-close" aria-label="关闭主机列表">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-tools">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+      <input class="input" id="host-search" type="search" placeholder="搜索名称、地址或标签" autocomplete="off" aria-label="搜索主机">
+      <span class="go kbd">/</span>
+    </div>
+    <button class="btn btn-primary" id="btn-add-host">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      新增
+    </button>
+  </div>
+  <div id="drawer-list"></div>
+  <div class="drawer-foot">
+    <div class="keys">
+      <span><span class="kbd">↑↓</span> 选择</span>
+      <span><span class="kbd">Enter</span> 连接</span>
+      <span><span class="kbd">e</span> 编辑</span>
+      <span><span class="kbd">a</span> 新增</span>
+      <span><span class="kbd">q</span> 关闭</span>
+    </div>
+    <span class="eyebrow">SSH · SFTP READY</span>
+  </div>
+</aside>
+
+<!-- ================= 主机编辑对话框 ================= -->
+<dialog id="dlg-host">
+  <div class="dlg">
+    <div class="dlg-head">
+      <div>
+        <p class="eyebrow">HOST PROFILE</p>
+        <h2 id="host-title">新增主机</h2>
+      </div>
+      <button class="icon-btn" data-close="dlg-host" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <form id="host-form" novalidate>
+      <div class="dlg-body">
+        <div class="fields">
+          <div class="field">
+            <label for="f-name">名称</label>
+            <input class="input" id="f-name" name="name" required maxlength="120" placeholder="例如 production" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="f-host">主机地址</label>
+            <input class="input" id="f-host" name="hostname" required placeholder="192.168.1.10 或 host.example.com" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="f-user">用户名</label>
+            <input class="input" id="f-user" name="user" required placeholder="root" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="f-port">端口</label>
+            <input class="input" id="f-port" name="port" type="number" min="1" max="65535" value="22" required>
+          </div>
+          <div class="field wide">
+            <span class="field-label">认证方式</span>
+            <div class="seg" role="radiogroup" aria-label="认证方式">
+              <input type="radio" name="auth_type" id="auth-auto" value="auto" checked><label for="auth-auto">自动</label>
+              <input type="radio" name="auth_type" id="auth-pass" value="password"><label for="auth-pass">密码</label>
+              <input type="radio" name="auth_type" id="auth-key" value="private_key"><label for="auth-key">私钥</label>
+            </div>
+          </div>
+          <div class="field wide" id="row-key" hidden>
+            <label for="f-key">私钥路径</label>
+            <input class="input" id="f-key" name="identity_file" placeholder="~/.ssh/id_ed25519" autocomplete="off">
+            <p class="hint">密钥保存在本机；<code>known_hosts</code> 指纹校验仍然生效。</p>
+          </div>
+          <div class="field wide" id="row-passhint" hidden>
+            <p class="hint">密码不会写入 hosts 配置——连接时若密码本未保存，将临时询问。</p>
+          </div>
+          <div class="field">
+            <label for="f-jump">跳板主机</label>
+            <select class="select" id="f-jump" name="proxy_jump"><option value="">不使用跳板</option></select>
+          </div>
+          <div class="field">
+            <label for="f-tags">标签</label>
+            <input class="input" id="f-tags" name="tags" placeholder="生产, web（逗号分隔）" autocomplete="off">
+          </div>
+        </div>
+        <p class="form-msg" id="host-msg" role="status"></p>
+      </div>
+      <div class="dlg-foot">
+        <button class="btn btn-danger-ghost" type="button" id="btn-del-host" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-.7 12a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9L6 7M10 11v6M14 11v6"/></svg>
+          删除
+        </button>
+        <span class="spacer"></span>
+        <button class="btn btn-subtle" type="button" data-close="dlg-host">取消</button>
+        <button class="btn btn-primary" type="submit">保存</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+<!-- ================= 连接对话框 ================= -->
+<dialog id="dlg-connect">
+  <div class="dlg dlg-sm">
+    <div class="dlg-head">
+      <div>
+        <p class="eyebrow">SSH LOGIN</p>
+        <h2>连接终端</h2>
+      </div>
+      <button class="icon-btn" data-close="dlg-connect" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <form id="connect-form">
+      <div class="dlg-body">
+        <div class="target-chip">
+          <span class="av" id="cc-av"></span>
+          <span class="meta">
+            <span class="nm" id="cc-name"></span>
+            <span class="ad" id="cc-addr"></span>
+          </span>
+          <span class="tag tag-meta" id="cc-auth"></span>
+        </div>
+        <div class="field">
+          <label for="cc-pass">主机密码 <span class="hint">（已保存可留空）</span></label>
+          <div class="password-wrap">
+            <input class="input" id="cc-pass" type="password" autocomplete="current-password" placeholder="临时密码，仅用于本次连接">
+            <button type="button" class="eye" data-eye="cc-pass" aria-label="显示/隐藏密码">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+            </button>
+          </div>
+          <p class="hint">密码本已解锁，私钥 / 已保存密码会自动使用；未保存的临时密码不会被记住。</p>
+        </div>
+        <p class="form-msg" id="connect-msg"></p>
+      </div>
+      <div class="dlg-foot">
+        <span class="spacer"></span>
+        <button class="btn btn-subtle" type="button" data-close="dlg-connect">取消</button>
+        <button class="btn btn-primary" type="submit">连接</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+<!-- ================= 删除确认 ================= -->
+<dialog id="dlg-confirm">
+  <div class="dlg dlg-sm">
+    <div class="dlg-head">
+      <div>
+        <p class="eyebrow">DANGER ZONE</p>
+        <h2>删除主机</h2>
+      </div>
+      <button class="icon-btn" data-close="dlg-confirm" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dlg-body">
+      <div class="confirm-body">
+        <p class="hint">将从主机列表中移除以下配置；已保存的凭据不受影响。</p>
+        <span class="target" id="confirm-target"></span>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <span class="spacer"></span>
+      <button class="btn btn-subtle" data-close="dlg-confirm" type="button">取消</button>
+      <button class="btn btn-danger" id="confirm-ok" type="button">确认删除</button>
+    </div>
+  </div>
+</dialog>
+
+</body></html>
