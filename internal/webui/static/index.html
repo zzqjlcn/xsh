@@ -12,6 +12,8 @@
 <script src="/vendor/xterm.js" defer></script>
 <script src="/vendor/addon-fit.js" defer></script>
 <script src="/app.js" defer></script>
+<script src="/files.js" defer></script>
+<link rel="stylesheet" href="/files.css">
 </head>
 <body>
 
@@ -57,6 +59,7 @@
     <div id="tabstrip" role="tablist" aria-label="SSH 终端会话"></div>
 
     <div class="top-actions">
+      <button class="btn btn-subtle" id="btn-upload" type="button" disabled>文件传输</button>
       <span class="readout">LOCAL · <b>ANSI-256</b> · TRUECOLOR</span>
       <button class="icon-btn" id="theme-toggle" title="切换深色 / 亮色主题" aria-label="切换主题" aria-pressed="false"></button>
       <button class="btn btn-primary" id="btn-open-hosts" title="主机列表 (q)" aria-label="主机列表">
@@ -279,4 +282,21 @@
   </div>
 </dialog>
 
+<dialog id="file-manager" aria-labelledby="files-title">
+  <div class="fm-header">
+    <div><h2 id="files-title">远程文件</h2><p id="files-host" class="hint"></p></div>
+    <div class="fm-header-actions"><button class="btn btn-primary" id="files-pick" type="button">选择文件上传</button><button class="btn btn-subtle" id="files-close" type="button">返回终端</button></div>
+  </div>
+  <section class="fm-pane" id="remote-pane" aria-label="远程文件">
+    <form class="fm-path" id="remote-path-form"><button type="button" id="remote-up" class="btn btn-subtle" aria-label="远程上级目录">↑</button><input class="input" id="remote-path" aria-label="远程目录" placeholder="输入目录后按 Enter"><button class="btn btn-subtle" type="button" id="remote-refresh" aria-label="刷新远程目录">↻</button></form>
+    <p class="fm-target">上传到 <strong id="upload-target">—</strong></p>
+    <div class="fm-table-wrap" id="remote-dropzone">
+      <div class="fm-drop-copy" aria-hidden="true"><strong>松开以上传文件</strong><span>上传到当前远程目录</span></div>
+      <table><thead><tr><th aria-label="选择"></th><th>名称</th><th>大小</th><th>类型</th><th>修改时间</th></tr></thead><tbody id="remote-entries"></tbody></table>
+    </div>
+    <div class="fm-pane-foot"><span id="remote-count"></span><span class="fm-drop-hint">可将文件拖到列表或目录中上传</span><button class="btn btn-subtle" id="files-download" disabled>下载所选</button></div>
+  </section>
+  <div class="fm-transfer"><progress id="files-progress" max="100" value="0" hidden aria-label="传输进度"></progress><div><span id="files-status" role="status" aria-live="polite">双击目录打开；选择文件或拖拽文件到列表即可上传。</span><button id="files-cancel" class="btn btn-subtle" hidden>取消传输</button></div></div>
+  <input id="upload-file-picker" type="file" multiple hidden>
+</dialog>
 </body></html>

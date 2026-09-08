@@ -27,6 +27,7 @@ type server struct {
 	session   string
 	sessionMu sync.RWMutex
 	remote    bool
+	uploads   sync.Map // connection ID -> *ssh.Client
 }
 
 const sessionCookie = "xsh_web_session"
@@ -106,6 +107,7 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := map[string]bool{
 		"index.html": true, "app.js": true, "style.css": true, "terminal.css": true, "state.css": true,
+		"files.js": true, "files.css": true,
 		"favicon.ico": true, "favicon.png": true, "logo.png": true,
 		"vendor/xterm.js": true, "vendor/xterm.css": true, "vendor/addon-fit.js": true,
 	}
@@ -210,6 +212,14 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) api(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/files" || r.URL.Path == "/api/download" {
+		s.remoteFiles(w, r)
+		return
+	}
+	if r.URL.Path == "/api/upload" {
+		s.upload(w, r)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r.URL.Path != "/api/hosts" {

@@ -1,7 +1,9 @@
 package webui
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +34,7 @@ type terminalMessage struct {
 	Cols        int    `json:"cols,omitempty"`
 	Rows        int    `json:"rows,omitempty"`
 	Trust       bool   `json:"trust,omitempty"`
+	Session     string `json:"session,omitempty"`
 }
 
 type socketWriter struct {
@@ -146,7 +149,15 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = store.RecordLogin(host.Name)
-	writer.send(terminalMessage{Type: "connected", Message: "connected"})
+	var secret [32]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		writer.send(terminalMessage{Type: "error", Message: err.Error()})
+		return
+	}
+	connectionID := hex.EncodeToString(secret[:])
+	s.uploads.Store(connectionID, connection.Client)
+	defer s.uploads.Delete(connectionID)
+	writer.send(terminalMessage{Type: "connected", Message: "connected", Session: connectionID})
 	done := make(chan error, 1)
 	go func() { done <- session.Wait() }()
 	messages := make(chan terminalMessage, 16)

@@ -35,6 +35,8 @@ On Linux, `xsh` first uses a Secret Service provider such as GNOME Keyring or KW
 
 ## Web UI
 
+After connecting a terminal, click **文件传输** in the top bar to browse the remote host over the existing SSH/SFTP connection. Double-click folders, use the up/refresh buttons, or enter a remote path. Upload multiple files with the file picker, drag files onto the current directory, or drop them directly onto a folder row. Downloads use the browser download manager. Transfers show progress, support cancellation, and reject existing remote filenames. Recursive folder transfers are not supported.
+
 ```shell
 xsh web
 xsh web --port 9090

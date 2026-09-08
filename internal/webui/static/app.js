@@ -298,10 +298,12 @@ function setSessionState(session, state, label) {
   session.state = state;
   session.tab.dataset.st = state;
   session.tab.title = `${session.host} · ${label}`;
+  updateUploadButton();
 }
 function activateSession(id) {
   const session = sessions.get(id); if (!session) return;
   activeSessionId = id;
+  updateUploadButton();
   for (const item of sessions.values()) {
     const active = item.id === id;
     item.pane.classList.toggle('active', active);
@@ -349,6 +351,7 @@ function openTerminal(host, password) {
     const data = JSON.parse(event.data);
     if (data.type === 'output') terminal.write(data.data);
     if (data.type === 'connected') {
+      session.uploadSession = data.session;
       setSessionState(session, 'connected', '已连接');
       terminal.write('\r\n');
       const known = hosts.find(h => h.name === host);
@@ -373,6 +376,12 @@ function closeSession(id) {
   sessions.delete(id); updateWorkspace();
   if (!sessions.size) activeSessionId = '';
   else if (activeSessionId === id) activateSession(Array.from(sessions.keys()).at(-1));
+  updateUploadButton();
+}
+
+function updateUploadButton() {
+  const session = sessions.get(activeSessionId);
+  document.querySelector('#btn-upload').disabled = session?.state !== 'connected' || !session?.uploadSession;
 }
 
 /* ---------------- 空状态最近使用 chips ---------------- */

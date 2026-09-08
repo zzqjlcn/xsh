@@ -580,3 +580,5 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 /* pane-area 层级修复：无会话时不得拦截空状态点击 */
 #pane-area { pointer-events: none; }
 .pane.active { pointer-events: auto; }
+
+#btn-upload:disabled { opacity: .5; cursor: not-allowed; }
