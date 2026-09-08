@@ -41,6 +41,7 @@ After connecting a terminal, click **文件传输** in the top bar to browse the
 xsh web
 xsh web --port 9090
 xsh web --host 0.0.0.0 --port 23456
+xsh web --host 0.0.0.0 --port 8080 --root-path /xsh
 ```
 
 Open the printed address (default `http://127.0.0.1:8080`) in your browser. Press Ctrl+C to stop. `--port 0` selects a free port. The UI is embedded in the executable and needs no separate frontend installation. It listens only on the local machine by default; pass `--host 0.0.0.0` to accept connections from other machines. Sign in with the encrypted password-vault master password; this unlocks saved credentials for the lifetime of the authenticated Web session. On first use, when no encrypted password vault exists, the login page asks you to create and confirm its master password before entering the terminal workspace.
@@ -48,6 +49,30 @@ Open the printed address (default `http://127.0.0.1:8080`) in your browser. Pres
 The terminal workspace is the Web UI's main screen. The host list opens in a right-side drawer, while adding and editing hosts uses dialogs. Multiple terminal tabs can stay connected at the same time, and closing a tab disconnects only that SSH session. Existing aliases are read-only when editing to preserve saved credentials. When creating or editing a password-authenticated host, its password can be saved in the encrypted vault; a password entered only in the connection dialog remains temporary. After Web login, encrypted-vault credentials are reused without requesting the master password again.
 
 The embedded terminal renders the standard 16-color palette, ANSI 256-color sequences, bold bright colors, and 24-bit truecolor sequences. Remote applications receive an `xterm-256color` PTY; xsh also requests `COLORTERM=truecolor` when the SSH server permits that environment variable.
+
+For an Nginx subpath, start with `--host 0.0.0.0 --port 8080 --root-path /xsh`, then add this location to your existing HTTP or HTTPS server:
+
+```nginx
+location = /xsh {
+    return 308 /xsh/$is_args$args;
+}
+
+location /xsh/ {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_buffering off;
+}
+```
+
+Visit `https://your-domain/xsh/` (or HTTP if that is how your Nginx server is configured). Keep `proxy_pass` without a trailing slash so Nginx preserves the path prefix. Preserve the browser's Origin header; xsh checks it against the forwarded Host for HTTP and HTTPS. Binding to `0.0.0.0` allows domain Host headers; restrict direct access to port 8080 if it should only be reached through Nginx. Set Nginx's `client_max_body_size` to your desired upload limit when transferring larger files.
+
+`--root-path` defaults to `/`, supports nested paths such as `/tools/xsh`, and accepts an optional trailing slash. Requests to `/xsh` redirect to `/xsh/`. Static assets, API requests, terminal WebSockets, and session cookie paths follow the mount path.
+
+Nginx references: [proxy_pass URI handling](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass), [WebSocket proxying](https://nginx.org/en/docs/http/websocket.html).
 
 Browser terminals verify `~/.ssh/known_hosts`. A new host shows its key type and fingerprint for confirmation before saving it. A changed key is rejected. The Web UI and its terminal assets are embedded in the executable and the WebSocket endpoint accepts only same-origin requests with the per-process token.
 

@@ -26,6 +26,14 @@ import (
 )
 
 func TestBrowserTerminalSession(t *testing.T) {
+	for _, root := range []string{"", "/tools/xsh"} {
+		t.Run("root="+root, func(t *testing.T) {
+			testBrowserTerminalSession(t, root)
+		})
+	}
+}
+
+func testBrowserTerminalSession(t *testing.T, root string) {
 	configDir := t.TempDir()
 	t.Setenv("XSH_CONFIG_HOME", configDir)
 	t.Setenv("USERPROFILE", t.TempDir())
@@ -50,13 +58,13 @@ func TestBrowserTerminalSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler, err := New()
+	handler, err := NewForHostAndRootPath("127.0.0.1", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
-	loginRequest, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/api/login", strings.NewReader(`{"password":"test-master"}`))
+	loginRequest, _ := http.NewRequest(http.MethodPost, httpServer.URL+root+"/api/login", strings.NewReader(`{"password":"test-master"}`))
 	loginRequest.Header.Set("Content-Type", "application/json")
 	loginResponse, err := http.DefaultClient.Do(loginRequest)
 	if err != nil {
@@ -69,7 +77,7 @@ func TestBrowserTerminalSession(t *testing.T) {
 	if err := json.NewDecoder(loginResponse.Body).Decode(&login); err != nil {
 		t.Fatal(err)
 	}
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/terminal?token=" + login.Token
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + root + "/ws/terminal?token=" + login.Token
 	header := http.Header{"Origin": []string{httpServer.URL}, "Cookie": []string{loginResponse.Cookies()[0].String()}}
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
@@ -109,7 +117,7 @@ func TestBrowserTerminalSession(t *testing.T) {
 	upload := func(name, session, requestToken string, authenticated bool, want int) {
 		t.Helper()
 		query := url.Values{"session": {session}, "directory": {filepath.ToSlash(remoteDir)}, "name": {name}}
-		req, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/api/upload?"+query.Encode(), strings.NewReader(content))
+		req, _ := http.NewRequest(http.MethodPost, httpServer.URL+root+"/api/upload?"+query.Encode(), strings.NewReader(content))
 		req.Header.Set("X-XSH-Token", requestToken)
 		if authenticated {
 			req.AddCookie(loginResponse.Cookies()[0])
@@ -146,7 +154,7 @@ func TestBrowserTerminalSession(t *testing.T) {
 	remoteRequest := func(endpoint, filePath string, authenticated bool, want int) ([]byte, http.Header) {
 		t.Helper()
 		query := url.Values{"session": {uploadSession}, "path": {filepath.ToSlash(filePath)}}
-		req, _ := http.NewRequest(http.MethodGet, httpServer.URL+endpoint+"?"+query.Encode(), nil)
+		req, _ := http.NewRequest(http.MethodGet, httpServer.URL+root+endpoint+"?"+query.Encode(), nil)
 		if authenticated {
 			req.AddCookie(loginResponse.Cookies()[0])
 		}

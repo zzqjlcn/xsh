@@ -22,6 +22,7 @@ func runWebCommand(arguments []string, output io.Writer) error {
 	flags.SetOutput(output)
 	host := flags.String("host", "127.0.0.1", "Web UI listen host")
 	port := flags.Int("port", 8080, "local Web UI port (0 selects a free port)")
+	rootPath := flags.String("root-path", "/", "Web UI URL mount path (for example /xsh)")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -29,9 +30,13 @@ func runWebCommand(arguments []string, output io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 || strings.TrimSpace(*host) == "" || *port < 0 || *port > 65535 {
-		return errors.New("usage: xsh web [--host address] [--port 0-65535]")
+		return errors.New("usage: xsh web [--host address] [--port 0-65535] [--root-path /xsh]")
 	}
-	handler, err := webui.NewForHost(*host)
+	root, err := webui.NormalizeRootPath(*rootPath)
+	if err != nil {
+		return err
+	}
+	handler, err := webui.NewForHostAndRootPath(*host, root)
 	if err != nil {
 		return err
 	}
@@ -54,7 +59,7 @@ func runWebCommand(arguments []string, output io.Writer) error {
 		case <-done:
 		}
 	}()
-	fmt.Fprintf(output, "xsh Web UI: http://%s\nPress Ctrl+C to stop.\n", listener.Addr())
+	fmt.Fprintf(output, "xsh Web UI: http://%s%s\nPress Ctrl+C to stop.\n", listener.Addr(), root)
 	err = server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

@@ -54,7 +54,7 @@ function isSessionActive(hostName) {
 
 /* ---------------- 登录 / 解锁 ---------------- */
 async function loadHosts() {
-  const response = await fetch('/api/hosts');
+  const response = await fetch('api/hosts');
   if (response.status === 401) { await lockView(); return false; }
   if (!response.ok) throw new Error(await response.text());
   const data = await response.json(); hosts = data.hosts || []; token = data.token;
@@ -66,7 +66,7 @@ async function lockView(status) {
   appEl.hidden = true; closeDrawer();
   document.querySelector('#master-error').textContent = '';
   if (!status) {
-    const statusResponse = await fetch('/api/auth/status');
+    const statusResponse = await fetch('api/auth/status');
     status = statusResponse.ok ? await statusResponse.json() : {};
   }
   setupRequired = Boolean(status.setup_required);
@@ -82,7 +82,7 @@ document.querySelector('#master-form').onsubmit = async event => {
   event.preventDefault();
   const passwordInput = document.querySelector('#master-password'), confirmInput = document.querySelector('#master-confirm');
   if (setupRequired && passwordInput.value !== confirmInput.value) { document.querySelector('#master-error').textContent = '两次输入的 master password 不一致。'; confirmInput.focus(); return; }
-  const response = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: passwordInput.value, create: setupRequired }) });
+  const response = await fetch('api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: passwordInput.value, create: setupRequired }) });
   passwordInput.value = ''; confirmInput.value = '';
   if (!response.ok) { document.querySelector('#master-error').textContent = (await response.text()).trim(); passwordInput.focus(); return; }
   token = (await response.json()).token; await loadHosts();
@@ -239,7 +239,7 @@ hostForm.onsubmit = async event => {
   await mutateHost(editingOriginal ? 'PUT' : 'POST', host, password);
 };
 async function mutateHost(method, host, password = '') {
-  const response = await fetch('/api/hosts', {
+  const response = await fetch('api/hosts', {
     method,
     headers: { 'Content-Type': 'application/json', 'X-XSH-Token': token },
     body: JSON.stringify({ original: editingOriginal, host, password })
@@ -330,8 +330,9 @@ function openTerminal(host, password) {
   session.resizeObserver.observe(pane);
   activateSession(id);
   terminal.writeln('\x1b[38;5;108mxsh\x1b[0m connecting…');
-  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  session.socket = new WebSocket(`${scheme}//${location.host}/ws/terminal?token=${encodeURIComponent(token)}`);
+  const socketURL = new URL(`ws/terminal?token=${encodeURIComponent(token)}`, location.href);
+  socketURL.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  session.socket = new WebSocket(socketURL);
   session.socket.onopen = () => {
     const auth = session.auth; session.auth = null;
     sendTerminal(session, { type: 'connect', host, password: auth.password, cols: terminal.cols, rows: terminal.rows });
@@ -406,7 +407,7 @@ document.addEventListener('keydown', event => {
 /* ---------------- 锁定 ---------------- */
 document.querySelector('#btn-lock').addEventListener('click', async () => {
   for (const id of Array.from(sessions.keys())) closeSession(id);
-  await fetch('/api/logout', { method: 'POST', headers: { 'X-XSH-Token': token } });
+  await fetch('api/logout', { method: 'POST', headers: { 'X-XSH-Token': token } });
   token = ''; await lockView();
 });
 /* 有活跃 SSH 会话时，浏览器关闭标签/窗口（含 Ctrl+W / Ctrl+Shift+W）会触发原生「离开确认」，
@@ -471,7 +472,7 @@ setTheme(savedTheme);
 if (themeToggle) themeToggle.addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
 
 async function initialize() {
-  const statusResponse = await fetch('/api/auth/status');
+  const statusResponse = await fetch('api/auth/status');
   const status = statusResponse.ok ? await statusResponse.json() : {};
   if (status.authenticated) await loadHosts();
   else await lockView(status);

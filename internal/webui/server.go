@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 
@@ -27,6 +28,7 @@ type server struct {
 	session   string
 	sessionMu sync.RWMutex
 	remote    bool
+	rootPath  string
 	uploads   sync.Map // connection ID -> *ssh.Client
 }
 
@@ -37,6 +39,34 @@ func New() (http.Handler, error) {
 }
 
 func NewForHost(bindHost string) (http.Handler, error) {
+	return NewForHostAndRootPath(bindHost, "/")
+}
+
+// NormalizeRootPath returns a canonical mount path with a trailing slash.
+func NormalizeRootPath(root string) (string, error) {
+	if root == "" || root == "/" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(root, "/") || strings.HasPrefix(root, "//") || strings.ContainsAny(root, "?#%\\") {
+		return "", errors.New("root path must be an absolute URL path, such as /xsh")
+	}
+	for _, c := range root {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("/-._~", c)) {
+			return "", errors.New("root path may contain only letters, digits, /, -, ., _, and ~")
+		}
+	}
+	root = path.Clean(root)
+	if root == "/" {
+		return root, nil
+	}
+	return root + "/", nil
+}
+
+func NewForHostAndRootPath(bindHost, rootPath string) (http.Handler, error) {
+	rootPath, err := NormalizeRootPath(rootPath)
+	if err != nil {
+		return nil, err
+	}
 	var tokenSecret, sessionSecret [32]byte
 	if _, err := rand.Read(tokenSecret[:]); err != nil {
 		return nil, err
@@ -46,8 +76,28 @@ func NewForHost(bindHost string) (http.Handler, error) {
 	}
 	bindIP := net.ParseIP(bindHost)
 	localOnly := strings.EqualFold(bindHost, "localhost") || bindIP != nil && bindIP.IsLoopback()
-	s := &server{token: hex.EncodeToString(tokenSecret[:]), session: hex.EncodeToString(sessionSecret[:]), remote: !localOnly}
-	return http.HandlerFunc(s.serve), nil
+	s := &server{token: hex.EncodeToString(tokenSecret[:]), session: hex.EncodeToString(sessionSecret[:]), remote: !localOnly, rootPath: rootPath}
+	handler := http.StripPrefix(strings.TrimSuffix(rootPath, "/"), http.HandlerFunc(s.serve))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rootPath != "/" && r.URL.Path == strings.TrimSuffix(rootPath, "/") {
+			target := rootPath
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, rootPath) {
+			http.NotFound(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}), nil
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	return origin == "http://"+r.Host || origin == "https://"+r.Host
 }
 
 func (s *server) serve(w http.ResponseWriter, r *http.Request) {
@@ -55,13 +105,16 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	host, _, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host = strings.Trim(r.Host, "[]")
+	}
 	hostIP := net.ParseIP(host)
 	loopbackHost := strings.EqualFold(host, "localhost") || hostIP != nil && hostIP.IsLoopback()
-	if err != nil || !s.remote && !loopbackHost {
+	if !s.remote && !loopbackHost {
 		http.Error(w, "use the printed loopback address", http.StatusForbidden)
 		return
 	}
-	if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host {
+	if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(r) {
 		http.Error(w, "cross-origin requests are not allowed", http.StatusForbidden)
 		return
 	}
@@ -188,7 +241,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: s.session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: s.session, Path: s.rootPath, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
 		Token string `json:"token"`
@@ -207,7 +260,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		s.session = hex.EncodeToString(next[:])
 		s.sessionMu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: s.rootPath, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
 }
 

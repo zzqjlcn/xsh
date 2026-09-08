@@ -72,7 +72,7 @@ async function loadRemote(directory = fileState.remotePath || '.') {
   fileState.loading = true; fileControls();
   try {
     const query = new URLSearchParams({ session: fileState.target.uploadSession, path: directory });
-    const response = await fetch(`/api/files?${query}`);
+    const response = await fetch(`api/files?${query}`);
     if (!response.ok) throw new Error((await response.text()).trim());
     const data = await response.json();
     if (generation !== fileState.generation) return;
@@ -112,7 +112,7 @@ function uploadFile(file, directory, label) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest(); fileState.xhr = xhr;
     const query = new URLSearchParams({ session: fileState.target.uploadSession, directory, name: file.name });
-    xhr.open('POST', `/api/upload?${query}`); xhr.setRequestHeader('X-XSH-Token', token);
+    xhr.open('POST', `api/upload?${query}`); xhr.setRequestHeader('X-XSH-Token', token);
     xhr.upload.onprogress = event => {
       const percent = event.lengthComputable && event.total ? event.loaded / event.total * 100 : 0;
       fEl('files-progress').value = percent;
@@ -178,7 +178,7 @@ fEl('files-download').onclick = () => {
   const name = Array.from(fileState.selected)[0];
   if (!name) return;
   const query = new URLSearchParams({ session: fileState.target.uploadSession, path: joinRemote(fileState.remotePath, name) });
-  const link = document.createElement('a'); link.href = `/api/download?${query}`; link.download = name;
+  const link = document.createElement('a'); link.href = `api/download?${query}`; link.download = name;
   document.body.append(link); link.click(); link.remove();
   fileMessage(`已将 ${name} 交给浏览器下载，请在浏览器下载列表查看结果。`);
 };

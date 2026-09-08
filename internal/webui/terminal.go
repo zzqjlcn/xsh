@@ -61,7 +61,7 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(request *http.Request) bool {
-		return request.Header.Get("Origin") == "http://"+request.Host
+		return sameOrigin(request)
 	}}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
