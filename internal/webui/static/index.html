@@ -176,13 +176,9 @@
             <p class="hint">密钥保存在本机；<code>known_hosts</code> 指纹校验仍然生效。</p>
           </div>
           <div class="field wide password-save" id="row-passhint" hidden>
-            <label class="check-row" for="f-save-password">
-              <input id="f-save-password" name="save_password" type="checkbox">
-              <span>保存到加密密码本</span>
-            </label>
             <label for="f-password">主机密码</label>
             <div class="password-wrap">
-              <input class="input" id="f-password" name="password" type="password" autocomplete="new-password" placeholder="勾选保存后输入密码" disabled>
+              <input class="input" id="f-password" name="password" type="password" autocomplete="new-password" placeholder="输入要保存的主机密码" disabled>
               <button type="button" class="eye" data-eye="f-password" aria-label="显示/隐藏密码">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
               </button>
@@ -285,7 +281,7 @@
 <dialog id="file-manager" aria-labelledby="files-title">
   <div class="fm-header">
     <div><h2 id="files-title">远程文件</h2><p id="files-host" class="hint"></p></div>
-    <div class="fm-header-actions"><button class="btn btn-primary" id="files-pick" type="button">选择文件上传</button><button class="btn btn-subtle" id="files-close" type="button">返回终端</button></div>
+    <div class="fm-header-actions"><button class="btn btn-primary" id="files-pick" type="button">选择文件上传</button><button class="btn btn-subtle fm-close" id="files-close" type="button" aria-label="关闭文件窗口" title="关闭文件窗口">×</button></div>
   </div>
   <section class="fm-pane" id="remote-pane" aria-label="远程文件">
     <form class="fm-path" id="remote-path-form"><button type="button" id="remote-up" class="btn btn-subtle" aria-label="远程上级目录">↑</button><input class="input" id="remote-path" aria-label="远程目录" placeholder="输入目录后按 Enter"><button class="btn btn-subtle" type="button" id="remote-refresh" aria-label="刷新远程目录">↻</button></form>

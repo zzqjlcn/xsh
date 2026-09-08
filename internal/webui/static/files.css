@@ -21,6 +21,13 @@
 .fm-header h2 { margin: 0; font-size: 19px; }
 .fm-header p { margin: 4px 0 0; }
 .fm-header-actions { display: flex; align-items: center; gap: 8px; }
+.fm-close {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
 .fm-pane { min-width: 0; }
 .fm-path { display: flex; gap: 6px; padding: 14px 14px 8px; }
 .fm-path .input {
@@ -118,7 +125,7 @@
 @media (max-width: 760px) {
   #file-manager { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .fm-header { padding: 12px; }
-  .fm-header-actions { flex-direction: column; align-items: stretch; }
+  .fm-header-actions { align-items: stretch; }
   .fm-table-wrap { height: 48dvh; }
   .fm-drop-hint { display: none; }
   .fm-name { max-width: 180px; }

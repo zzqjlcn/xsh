@@ -264,12 +264,9 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not found", 404)
 		return
 	}
+	input.Host.SavePassword = input.Host.AuthType == config.AuthPassword
 	switch r.Method {
 	case http.MethodPost:
-		if input.Host.SavePassword && input.Host.AuthType != config.AuthPassword {
-			http.Error(w, "password can only be saved for password authentication", 400)
-			return
-		}
 		if input.Host.SavePassword && input.Password == "" {
 			http.Error(w, "host password is required when saving it", 400)
 			return

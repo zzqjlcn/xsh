@@ -480,11 +480,6 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 .seg input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: 1px; }
 
 .password-save { gap: 8px; }
-.check-row {
-  display: inline-flex; align-items: center; gap: 8px; width: fit-content;
-  color: var(--tx-2); font-size: 12.5px; cursor: pointer; user-select: none;
-}
-.check-row input { width: 15px; height: 15px; margin: 0; accent-color: var(--acc); }
 .password-save .input:disabled { opacity: .55; cursor: not-allowed; background: var(--bg-2); }
 .password-save .input:disabled + .eye { display: none; }
 

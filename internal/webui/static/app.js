@@ -192,24 +192,16 @@ document.addEventListener('keydown', event => {
 function authValue() { const rl = hostField('auth_type'); return (rl && rl.value) || 'auto'; }
 function syncAuthUI() {
   const mode = authValue();
-  const savePassword = hostField('save_password');
   const password = hostField('password');
   document.querySelector('#row-key').hidden = mode !== 'private_key';
   document.querySelector('#row-passhint').hidden = mode !== 'password';
   hostField('identity_file').required = mode === 'private_key';
-  savePassword.disabled = mode !== 'password';
-  password.disabled = mode !== 'password' || !savePassword.checked;
-  if (!savePassword.checked) {
+  password.disabled = mode !== 'password';
+  if (mode !== 'password') {
     password.value = '';
-    password.placeholder = '勾选保存后输入密码';
   }
 }
 for (const radio of document.querySelectorAll('input[name="auth_type"]')) radio.addEventListener('change', syncAuthUI);
-hostField('save_password').addEventListener('change', () => {
-  const password = hostField('password');
-  syncAuthUI();
-  if (!password.disabled) password.focus();
-});
 
 function openHostModal(host) {
   editingOriginal = host?.name || '';
@@ -223,11 +215,9 @@ function openHostModal(host) {
     hostField('tags').value = (host.tags || []).join(', ');
     if (jump.value === '' && host.proxy_jump) jump.value = host.proxy_jump;
     hostField('auth_type').value = host.auth_type || 'auto';
-    hostField('save_password').checked = Boolean(host.save_password);
     hostField('password').placeholder = host.save_password ? '留空则保留当前已保存密码' : '输入要保存的主机密码';
   } else {
     hostField('name').readOnly = false;
-    hostField('save_password').checked = false;
     hostField('password').placeholder = '输入要保存的主机密码';
   }
   syncAuthUI();
@@ -243,7 +233,7 @@ hostForm.onsubmit = async event => {
   const host = Object.fromEntries(new FormData(hostForm));
   host.port = Number(host.port);
   host.tags = host.tags.split(/[,，]/).map(value => value.trim()).filter(Boolean);
-  host.save_password = host.save_password === 'on';
+  host.save_password = host.auth_type === 'password';
   const password = host.password || '';
   delete host.password;
   await mutateHost(editingOriginal ? 'PUT' : 'POST', host, password);
