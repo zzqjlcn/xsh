@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/zzqjlcn/xsh/internal/database"
 )
 
 type AuthType string
@@ -36,65 +36,61 @@ type Store struct {
 	Hosts []SSHHost `json:"hosts"`
 }
 
-func Dir() (string, error) {
-	dir := strings.TrimSpace(os.Getenv("XSH_CONFIG_HOME"))
-	if dir == "" {
-		base, err := os.UserConfigDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(base, "xsh")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+func Dir() (string, error) { return database.Dir() }
 
-func Path() (string, error) {
-	dir, err := Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "hosts.json"), nil
-}
+func Path() (string, error) { return database.Path() }
 
 func Load() (*Store, error) {
-	path, err := Path()
+	db, err := database.Open()
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return &Store{}, nil
-	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT data FROM hosts ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
-	var store Store
-	if err := json.Unmarshal(data, &store); err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+	defer rows.Close()
+	store := &Store{}
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var host SSHHost
+		if err := json.Unmarshal([]byte(data), &host); err != nil {
+			return nil, err
+		}
+		host.applyDefaults()
+		store.Hosts = append(store.Hosts, host)
 	}
-	for i := range store.Hosts {
-		store.Hosts[i].applyDefaults()
-	}
-	return &store, nil
+	return store, rows.Err()
 }
 
 func (s *Store) Save() error {
-	path, err := Path()
+	db, err := database.Open()
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	defer db.Close()
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	defer tx.Rollback()
+	if _, err = tx.Exec(`DELETE FROM hosts`); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	for _, host := range s.Hosts {
+		data, err := json.Marshal(host)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`INSERT INTO hosts(name,data) VALUES(?,?)`, host.Name, string(data)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Find(name string) *SSHHost {

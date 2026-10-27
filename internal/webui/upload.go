@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 )
 
 // Upload over the already authenticated terminal connection, without retaining passwords.
@@ -27,6 +26,11 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "终端连接已关闭，请重新连接后上传。", http.StatusConflict)
 		return
 	}
+	ownerConnection := connection.(*webConnection)
+	if !ownedConnection(requestSession(r), ownerConnection.UserID, ownerConnection.SessionID) {
+		http.Error(w, "connection not found", http.StatusNotFound)
+		return
+	}
 	name, directory := r.URL.Query().Get("name"), r.URL.Query().Get("directory")
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") || strings.ContainsRune(directory, 0) {
 		http.Error(w, "文件名或目标目录无效。", http.StatusBadRequest)
@@ -36,7 +40,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request) {
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Time{})
 	_ = controller.SetWriteDeadline(time.Time{})
-	client, err := sftp.NewClient(connection.(*ssh.Client))
+	client, err := sftp.NewClient(ownerConnection.Client)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

@@ -183,3 +183,12 @@ fEl('files-download').onclick = () => {
   fileMessage(`已将 ${name} 交给浏览器下载，请在浏览器下载列表查看结果。`);
 };
 fEl('files-cancel').onclick = () => { fileState.controller?.abort(); fileState.xhr?.abort(); };
+
+window.addEventListener('xsh-logout', () => {
+  fileState.generation++; fileState.controller?.abort(); fileState.xhr?.abort();
+  fileState.target = null; fileState.remotePath = ''; fileState.remote = []; fileState.selected.clear();
+  fileState.loading = false; fileState.busy = false;
+  fEl('remote-entries').replaceChildren(); fEl('remote-path').value = '';
+  fEl('files-host').textContent = ''; fEl('upload-target').textContent = ''; fEl('remote-count').textContent = '';
+  fEl('upload-file-picker').value = '';
+});

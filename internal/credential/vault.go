@@ -10,12 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+
 	"sync"
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/zzqjlcn/xsh/internal/config"
+	"github.com/zzqjlcn/xsh/internal/database"
 )
 
 const (
@@ -56,11 +56,11 @@ type vaultSession struct {
 var currentVault vaultSession
 
 func VaultExists() bool {
-	path, err := vaultPath()
+	_, err := vaultPath()
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(path)
+	_, err = database.ReadVault()
 	return err == nil
 }
 
@@ -94,11 +94,11 @@ func CreateVault(password string) error {
 	}
 	currentVault.Lock()
 	defer currentVault.Unlock()
-	path, err := vaultPath()
+	_, err := vaultPath()
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(path); err == nil {
+	if _, err := database.ReadVault(); err == nil {
 		return errors.New("encrypted password vault already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -175,7 +175,7 @@ func (v *vaultSession) unlock(prompt PasswordPrompt, create bool) error {
 		return errors.New("master password prompt is unavailable")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := database.ReadVault()
 	if errors.Is(err, os.ErrNotExist) {
 		if !create {
 			return os.ErrNotExist
@@ -310,23 +310,10 @@ func (v *vaultSession) save() error {
 	if err != nil {
 		return err
 	}
-	temporary := v.path + ".tmp"
-	if err := os.WriteFile(temporary, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(temporary, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, v.path)
+	return database.WriteVault(data)
 }
 
-func vaultPath() (string, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "secrets.db"), nil
-}
+func vaultPath() (string, error) { return database.Path() }
 
 func deriveKey(password string, salt []byte) []byte {
 	passwordBytes := []byte(password)

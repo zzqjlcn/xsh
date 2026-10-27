@@ -5,9 +5,14 @@
              /ws/terminal(WebSocket) · xterm + FitAddon
    ============================================================ */
 const sessions = new Map();
+const lastLoginStorageKey = `xsh-last-login:${new URL('.', location.href).pathname}`;
+const workspaceTabs = new Map();
+let activeTabId = '', nextTabId = 1, connectPlacement = null;
 let hosts = [], token = '', editingOriginal = '', connectHost = '', activeSessionId = '', nextSessionId = 1, setupRequired = false, selectedIdx = -1;
 
 const masterDialog = document.querySelector('#master-login');
+const screenLockDialog = document.querySelector('#screen-lock');
+let screenLocked = false, settingsUsers = [];
 const hostDialog = document.querySelector('#dlg-host');
 const connectDialog = document.querySelector('#dlg-connect');
 const confirmDialog = document.querySelector('#dlg-confirm');
@@ -24,6 +29,7 @@ const paneArea = document.querySelector('#pane-area');
 const recentWrap = document.querySelector('#recent-wrap');
 const recentChips = document.querySelector('#recent-chips');
 const hostField = name => hostForm.elements.namedItem(name);
+let currentUser = null, acceptingShareId = 0, sharingHost = '', legacyVaultRequired = false, authGeneration = 0;
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -54,55 +60,107 @@ function isSessionActive(hostName) {
 
 /* ---------------- 登录 / 解锁 ---------------- */
 async function loadHosts() {
+  const generation = authGeneration;
   const response = await fetch('api/hosts');
+  if (generation !== authGeneration) return false;
   if (response.status === 401) { await lockView(); return false; }
+  if (response.status === 423) { showScreenLock(); return false; }
   if (!response.ok) throw new Error(await response.text());
-  const data = await response.json(); hosts = data.hosts || []; token = data.token;
+  const data = await response.json();
+  if (generation !== authGeneration) return false;
+  hosts = data.hosts || []; token = data.token; currentUser = data.user;
+  document.querySelector('#settings-nav-users').hidden = !currentUser?.admin;
   appEl.hidden = false;
   if (masterDialog.open) masterDialog.close();
-  updateCount(); renderDrawer(); renderRecent(); return true;
+  updateCount(); renderDrawer(); renderRecent(); if (!workspaceTabs.size) newHomeTab(); return true;
 }
 async function lockView(status) {
+  const generation = ++authGeneration;
+  screenLocked = false; settingsUsers = [];
+  document.querySelector('#screen-unlock-password').value = '';
+  for (const id of Array.from(sessions.keys())) closeSession(id);
+  for (const id of Array.from(workspaceTabs.keys())) closeWorkspaceTab(id);
+  for (const dialog of document.querySelectorAll('dialog[open]')) if (dialog !== masterDialog) dialog.close();
+  hosts = []; token = ''; currentUser = null; acceptingShareId = 0; sharingHost = '';
+  hostForm.reset(); document.querySelector('#cc-pass').value = '';
+  for (const id of ['drawer-list','recent-chips','inbox-list','account-users','share-target','cc-name','cc-addr']) document.getElementById(id).replaceChildren();
+  window.dispatchEvent(new Event('xsh-logout'));
   appEl.hidden = true; closeDrawer();
   document.querySelector('#master-error').textContent = '';
   if (!status) {
-    const statusResponse = await fetch('api/auth/status');
-    status = statusResponse.ok ? await statusResponse.json() : {};
+    const response = await fetch('api/auth/status'); status = response.ok ? await response.json() : {};
   }
+  if (generation !== authGeneration) return;
   setupRequired = Boolean(status.setup_required);
-  document.querySelector('#master-title').textContent = setupRequired ? '创建密码本' : 'xsh Web';
-  document.querySelector('#master-copy').textContent = setupRequired ? '首次使用，请创建密码本主密码。之后登录和读取主机密码均使用此密码。' : '输入密码本（encrypted vault）的 master password 以解锁已保存的凭据。';
+  document.querySelector('#master-title').textContent = setupRequired ? '创建管理员' : 'xsh';
+  document.querySelector('#master-copy').textContent = setupRequired ? '首个账号为管理员，其他账号由管理员创建。' : '登录你的 xsh 账号。';
+  document.querySelector('#setup-code-row').hidden = !setupRequired;
+  document.querySelector('#setup-code').required = setupRequired;
   document.querySelector('#master-confirm-row').hidden = !setupRequired;
   document.querySelector('#master-confirm').required = setupRequired;
-  document.querySelector('#master-submit').textContent = setupRequired ? '创建并进入' : '解锁终端';
+  document.querySelector('#master-password').autocomplete = setupRequired ? 'new-password' : 'current-password';
+  document.querySelector('#legacy-import-row').hidden = !setupRequired || !status.legacy_available;
+  legacyVaultRequired = setupRequired && Boolean(status.legacy_vault);
+  syncLegacyImport();
+  document.querySelector('#master-submit').textContent = setupRequired ? '创建并登录' : '登录';
+  const username = document.querySelector('#login-username');
+  if (!setupRequired && !username.value) { try { username.value = localStorage.getItem(lastLoginStorageKey) || ''; } catch (_) {} }
   if (!masterDialog.open) masterDialog.showModal();
-  setTimeout(() => document.querySelector('#master-password').focus(), 0);
+  setTimeout(() => (username.value && !setupRequired ? document.querySelector('#master-password') : username).focus(), 0);
 }
+function syncLegacyImport() {
+  const needed = legacyVaultRequired && document.querySelector('#legacy-import').checked;
+  document.querySelector('#legacy-password-row').hidden = !needed;
+  document.querySelector('#legacy-password').required = needed;
+}
+document.querySelector('#legacy-import').addEventListener('change', syncLegacyImport);
 document.querySelector('#master-form').onsubmit = async event => {
   event.preventDefault();
-  const passwordInput = document.querySelector('#master-password'), confirmInput = document.querySelector('#master-confirm');
-  if (setupRequired && passwordInput.value !== confirmInput.value) { document.querySelector('#master-error').textContent = '两次输入的 master password 不一致。'; confirmInput.focus(); return; }
-  const response = await fetch('api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: passwordInput.value, create: setupRequired }) });
-  passwordInput.value = ''; confirmInput.value = '';
-  if (!response.ok) { document.querySelector('#master-error').textContent = (await response.text()).trim(); passwordInput.focus(); return; }
-  token = (await response.json()).token; await loadHosts();
+  const password = document.querySelector('#master-password'), confirmation = document.querySelector('#master-confirm');
+  const error = document.querySelector('#master-error'), submit = document.querySelector('#master-submit');
+  if (setupRequired && password.value !== confirmation.value) { error.textContent = '两次输入的登录密码不一致。'; return; }
+  const generation = ++authGeneration;
+  submit.disabled = true; error.textContent = '';
+  try {
+    const response = await fetch('api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+      username:document.querySelector('#login-username').value, password:password.value, create:setupRequired,
+      setup_code:document.querySelector('#setup-code').value, import_legacy:setupRequired && !document.querySelector('#legacy-import-row').hidden && document.querySelector('#legacy-import').checked,
+      legacy_password:document.querySelector('#legacy-password').value
+    }) });
+    if (generation !== authGeneration) return;
+    password.value = ''; confirmation.value = ''; document.querySelector('#legacy-password').value = '';
+    if (!response.ok) throw new Error((await response.text()).trim());
+    const data = await response.json(); if (generation !== authGeneration) return; token = data.token; currentUser = data.user;
+    try { localStorage.setItem(lastLoginStorageKey, data.user.username); } catch (_) {}
+    document.querySelector('#setup-code').value = ''; await loadHosts();
+  } catch (failure) { error.textContent = failure.message; }
+  finally { submit.disabled = false; }
 };
 masterDialog.addEventListener('cancel', event => event.preventDefault());
 
 /* ---------------- 主机抽屉 ---------------- */
 function openDrawer() {
   renderDrawer();
+  document.querySelector('#btn-open-hosts').setAttribute('aria-expanded', 'true');
   backdrop.hidden = false;
   requestAnimationFrame(() => { backdrop.classList.add('open'); drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false'); });
   setTimeout(() => { if (!searchInput.value) searchInput.focus(); }, 240);
 }
 function closeDrawer() {
+  document.querySelector('#btn-open-hosts').setAttribute('aria-expanded', 'false');
   backdrop.classList.remove('open');
   drawer.classList.remove('open');
   drawer.setAttribute('aria-hidden', 'true');
   setTimeout(() => { if (!backdrop.classList.contains('open')) backdrop.hidden = true; }, 220);
 }
-function updateCount() { if (countChip) countChip.textContent = hosts.length; }
+function updateCount() {
+  if (!countChip) return;
+  countChip.textContent = hosts.length > 99 ? '99+' : hosts.length;
+  countChip.hidden = !hosts.length;
+  const button = document.querySelector('#btn-open-hosts');
+  button.title = `主机列表 · ${hosts.length} 台 (q)`;
+  button.setAttribute('aria-label', `主机列表，${hosts.length} 台`);
+}
 function filteredHosts() {
   const q = searchInput.value.trim().toLowerCase();
   return hosts.filter(h => [h.name, h.hostname, h.user, ...(h.tags || [])].join(' ').toLowerCase().includes(q));
@@ -113,11 +171,12 @@ function hostRowHTML(h, i) {
   const initial = escapeHtml((h.name || '?').charAt(0).toUpperCase());
   const when = escapeHtml(h.last_login ? timeAgo(h.last_login) : '从未');
   const dot = isSessionActive(h.name) ? '' : ' off';
+  const savedPassword = h.save_password ? '<span class="host-saved-password" role="img" aria-label="已保存密码" title="已保存密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-4-4 3-3m-6 0 3-3"/></svg></span>' : '';
   const tags = firstTag.length ? `<span class="host-tags">${firstTag.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</span>` : '';
   return `<div class="host-item${i === selectedIdx ? ' sel' : ''}" data-idx="${i}" role="button" tabindex="0" aria-label="连接 ${escapeHtml(h.name)}">
     <span class="av" data-host="${escapeHtml(h.name)}">${initial}</span>
     <span class="host-main">
-      <span class="host-name-row"><span class="host-name"><span class="dot${dot}"></span> ${escapeHtml(h.name)}</span></span>
+      <span class="host-name-row"><span class="host-name"><span class="dot${dot}"></span> ${escapeHtml(h.name)}</span>${savedPassword}</span>
       <span class="host-addr">${escapeHtml(h.user)}@${escapeHtml(h.hostname)}:${h.port}</span>
       ${tags}
     </span>
@@ -195,7 +254,8 @@ function syncAuthUI() {
   const password = hostField('password');
   document.querySelector('#row-key').hidden = mode !== 'private_key';
   document.querySelector('#row-passhint').hidden = mode !== 'password';
-  hostField('identity_file').required = mode === 'private_key';
+  hostField('private_key').required = mode === 'private_key' && hostForm.dataset.hasPrivateKey !== 'true';
+  hostField('private_key').disabled = mode !== 'private_key';
   password.disabled = mode !== 'password';
   if (mode !== 'password') {
     password.value = '';
@@ -203,17 +263,106 @@ function syncAuthUI() {
 }
 for (const radio of document.querySelectorAll('input[name="auth_type"]')) radio.addEventListener('change', syncAuthUI);
 
-function openHostModal(host) {
-  editingOriginal = host?.name || '';
+const testPasswordButton = document.querySelector('#btn-test-password'), hostTestResult = document.querySelector('#host-test-result');
+let hostTestController = null;
+function resetHostTest() {
+  hostTestController?.abort(); hostTestController = null;
+  testPasswordButton.disabled = false; testPasswordButton.removeAttribute('aria-busy');
+  hostTestResult.hidden = true; hostTestResult.textContent = ''; hostTestResult.className = 'hint';
+}
+hostForm.addEventListener('input', resetHostTest);
+hostForm.addEventListener('change', resetHostTest);
+hostDialog.addEventListener('close', resetHostTest);
+testPasswordButton.addEventListener('click', async () => {
+  resetHostTest();
+  const controller = new AbortController(), generation = authGeneration;
+  hostTestController = controller; testPasswordButton.disabled = true; testPasswordButton.setAttribute('aria-busy', 'true');
+  hostTestResult.hidden = false; hostTestResult.textContent = '正在验证密码…';
+  const payload = {original:editingOriginal, host:{hostname:hostField('hostname').value.trim(), port:Number(hostField('port').value), user:hostField('user').value.trim(), proxy_jump:hostField('proxy_jump').value}, password:hostField('password').value, trust:{}};
+  try {
+    for (;;) {
+      const response = await fetch('api/hosts/test', {method:'POST', headers:{'Content-Type':'application/json','X-XSH-Token':token}, body:JSON.stringify(payload), signal:controller.signal});
+      if (controller.signal.aborted || generation !== authGeneration) return;
+      if (response.status === 401) { await lockView(); return; }
+      if (response.status === 423) { showScreenLock(); return; }
+      if (response.status === 409) {
+        const trust = await response.json();
+        if (controller.signal.aborted || generation !== authGeneration) return;
+        if (payload.trust[trust.address] || !window.confirm(`首次连接 ${trust.address}\n服务器指纹：${trust.fingerprint}\n是否信任此指纹并继续测试？`)) throw new Error('已取消验证');
+        payload.trust[trust.address] = trust.fingerprint; continue;
+      }
+      if (!response.ok) throw new Error((await response.text()).trim());
+      hostTestResult.textContent = '密码验证通过'; hostTestResult.className = 'hint success'; break;
+    }
+  } catch (error) {
+    if (!controller.signal.aborted && generation === authGeneration) { hostTestResult.textContent = error.message === 'Failed to fetch' ? '连接中断，请重试' : error.message; hostTestResult.className = 'hint error'; }
+  } finally {
+    if (hostTestController === controller) { hostTestController = null; testPasswordButton.disabled = false; testPasswordButton.removeAttribute('aria-busy'); }
+  }
+});
+
+const jumpPicker = document.querySelector('#jump-picker'), jumpToggle = document.querySelector('#f-jump-toggle'), jumpPanel = document.querySelector('#jump-panel'), jumpSearch = document.querySelector('#jump-search'), jumpOptions = document.querySelector('#jump-options');
+let jumpCandidates = [];
+function setJumpOpen(open) {
+  jumpPanel.hidden = !open; jumpToggle.setAttribute('aria-expanded', String(open));
+  if (open) {
+    jumpSearch.value = ''; renderJumpOptions();
+    const bounds = hostDialog.querySelector('.dlg').getBoundingClientRect(), anchor = jumpToggle.getBoundingClientRect();
+    const above = anchor.top - bounds.top - 12, below = bounds.bottom - anchor.bottom - 12, opensUp = below < 250 && above > below;
+    jumpPicker.classList.toggle('opens-up', opensUp);
+    jumpOptions.style.maxHeight = `${Math.max(60, Math.min(176, (opensUp ? above : below) - 68))}px`;
+    jumpSearch.focus({preventScroll:true});
+  }
+}
+function renderJumpOptions() {
+  const query = jumpSearch.value.trim().toLowerCase();
+  jumpOptions.replaceChildren();
+  const choices = [{name:'', label:'不使用跳板'}, ...jumpCandidates.map(host => ({name:host.name, label:host.name, address:host.hostname}))];
+  for (const choice of choices.filter(item => !item.name || `${item.name} ${item.address || ''}`.toLowerCase().includes(query))) {
+    const button = document.createElement('button'), text = document.createElement('span'), name = document.createElement('span'), check = document.createElement('span');
+    button.type = 'button'; button.className = 'jump-option'; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(hostField('proxy_jump').value === choice.name));
+    text.className = 'jump-option-text'; name.textContent = choice.label; text.append(name);
+    if (choice.address && choice.address !== choice.name) { const address = document.createElement('small'); address.textContent = choice.address; text.append(address); }
+    check.className = 'jump-option-check'; check.textContent = '✓'; check.setAttribute('aria-hidden', 'true'); button.append(text, check);
+    button.addEventListener('click', () => { hostField('proxy_jump').value = choice.name; document.querySelector('#jump-value').textContent = choice.label; hostField('proxy_jump').dispatchEvent(new Event('change', {bubbles:true})); setJumpOpen(false); jumpToggle.focus(); });
+    jumpOptions.append(button);
+  }
+  if (query && jumpOptions.children.length === 1) { const empty = document.createElement('p'); empty.className = 'share-picker-empty'; empty.textContent = '没有匹配的主机'; jumpOptions.append(empty); }
+}
+jumpToggle.addEventListener('click', () => setJumpOpen(jumpPanel.hidden));
+jumpSearch.addEventListener('input', renderJumpOptions);
+jumpPicker.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !jumpPanel.hidden) { event.preventDefault(); event.stopPropagation(); setJumpOpen(false); jumpToggle.focus(); }
+  else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (jumpPanel.hidden) setJumpOpen(true);
+    const choices = [...jumpOptions.querySelectorAll('[role="option"]')], index = choices.indexOf(document.activeElement), offset = event.key === 'ArrowDown' ? 1 : -1;
+    choices[index < 0 ? (offset > 0 ? 0 : choices.length - 1) : (index + offset + choices.length) % choices.length]?.focus();
+  } else if (event.key === 'Enter' && event.target === jumpSearch) event.preventDefault();
+});
+document.addEventListener('click', event => { if (!jumpPicker.contains(event.target)) setJumpOpen(false); });
+jumpPicker.addEventListener('focusout', event => { if (!jumpPicker.contains(event.relatedTarget)) setJumpOpen(false); });
+hostDialog.addEventListener('close', () => setJumpOpen(false));
+hostDialog.querySelector('.dlg').addEventListener('scroll', () => setJumpOpen(false));
+window.addEventListener('resize', () => setJumpOpen(false));
+
+function openHostModal(host, shareId = 0) {
+  resetHostTest();
+  const editing = Boolean(host && !shareId);
+  acceptingShareId = shareId;
+  editingOriginal = editing ? host.name : '';
   hostForm.reset();
-  const jump = hostField('proxy_jump'); jump.replaceChildren(new Option('不使用跳板', ''));
-  for (const candidate of hosts) if (candidate.name !== editingOriginal) jump.add(new Option(candidate.name, candidate.name));
-  if (host?.proxy_jump && !hosts.some(candidate => candidate.name === host.proxy_jump && candidate.name !== editingOriginal)) jump.add(new Option(host.proxy_jump, host.proxy_jump));
+  hostField('password').type = 'password';
+  hostForm.dataset.hasPrivateKey = String(Boolean(editing && host?.has_private_key));
+  hostField('private_key').placeholder = editing && host?.has_private_key ? '留空保留当前私钥' : '粘贴私钥内容';
+  const jump = hostField('proxy_jump'); jump.value = host?.proxy_jump || '';
+  jumpCandidates = hosts.filter(candidate => candidate.name !== editingOriginal);
+  if (jump.value && !jumpCandidates.some(candidate => candidate.name === jump.value)) jumpCandidates = [...jumpCandidates, {name:jump.value}];
+  document.querySelector('#jump-value').textContent = jump.value || '不使用跳板'; setJumpOpen(false);
   if (host) {
-    for (const key of ['name', 'hostname', 'user', 'port', 'identity_file']) hostField(key).value = host[key] ?? '';
-    hostField('name').readOnly = true;
+    for (const key of ['name', 'hostname', 'user', 'port']) hostField(key).value = host[key] ?? '';
+    hostField('name').readOnly = editing;
     hostField('tags').value = (host.tags || []).join(', ');
-    if (jump.value === '' && host.proxy_jump) jump.value = host.proxy_jump;
     hostField('auth_type').value = host.auth_type || 'auto';
     hostField('password').placeholder = host.save_password ? '留空则保留当前已保存密码' : '输入要保存的主机密码';
   } else {
@@ -222,11 +371,12 @@ function openHostModal(host) {
   }
   syncAuthUI();
   if (host?.save_password) hostField('password').placeholder = '留空则保留当前已保存密码';
-  document.querySelector('#host-title').textContent = host ? `编辑 ${host.name}` : '新增主机';
-  document.querySelector('#btn-del-host').hidden = !host;
+  document.querySelector('#host-title').textContent = editing ? `编辑 ${host.name}` : shareId ? '添加分享的主机' : '新增主机';
+  document.querySelector('#btn-del-host').hidden = !editing;
+  document.querySelector('#btn-share-host').hidden = !editing;
   const msg = document.querySelector('#host-msg'); msg.textContent = ''; msg.className = 'form-msg';
   hostDialog.showModal();
-  setTimeout(() => (host ? hostField('hostname') : hostField('name')).focus(), 0);
+  setTimeout(() => (shareId ? hostField('user') : editing ? hostField('hostname') : hostField('name')).focus(), 0);
 }
 hostForm.onsubmit = async event => {
   event.preventDefault();
@@ -235,14 +385,15 @@ hostForm.onsubmit = async event => {
   host.tags = host.tags.split(/[,，]/).map(value => value.trim()).filter(Boolean);
   host.save_password = host.auth_type === 'password';
   const password = host.password || '';
-  delete host.password;
-  await mutateHost(editingOriginal ? 'PUT' : 'POST', host, password);
+  const privateKey = host.private_key || '';
+  delete host.password; delete host.private_key;
+  await mutateHost(editingOriginal ? 'PUT' : 'POST', host, password, privateKey);
 };
-async function mutateHost(method, host, password = '') {
+async function mutateHost(method, host, password = '', privateKey = '') {
   const response = await fetch('api/hosts', {
     method,
     headers: { 'Content-Type': 'application/json', 'X-XSH-Token': token },
-    body: JSON.stringify({ original: editingOriginal, host, password })
+    body: JSON.stringify({ original: editingOriginal, host, password, private_key: privateKey, share_id: acceptingShareId })
   });
   if (response.status === 401) { lockView(); return; }
   if (!response.ok) {
@@ -262,55 +413,186 @@ function askDelete() {
 document.querySelector('#confirm-ok').addEventListener('click', () => mutateHost('DELETE', {}));
 
 /* ---------------- 连接 ---------------- */
-function openConnect(host) {
+function openConnect(host, placement = null, username = host.user) {
+  connectPlacement = placement;
   connectHost = host.name;
   closeDrawer();
   document.querySelector('#cc-av').textContent = (host.name || '?').charAt(0).toUpperCase();
   document.querySelector('#cc-name').textContent = host.name;
-  document.querySelector('#cc-addr').textContent = `${host.user}@${host.hostname}:${host.port}`;
-  document.querySelector('#cc-auth').textContent = authLabel(host.auth_type);
+  document.querySelector('#cc-user').value = username;
   const pass = document.querySelector('#cc-pass'); pass.value = '';
+  syncConnectUser();
   const msg = document.querySelector('#connect-msg'); msg.textContent = ''; msg.className = 'form-msg';
   connectDialog.showModal();
   setTimeout(() => pass.focus(), 0);
 }
+function syncConnectUser() {
+  const host=hosts.find(item=>item.name===connectHost);if(!host)return;
+  const username=document.querySelector('#cc-user').value.trim(), changed=username!==host.user;
+  const passwordStatus = document.querySelector('#cc-password-status');
+  const hasSavedPassword = !changed && Boolean(host.save_password);
+  passwordStatus.hidden = false;
+  passwordStatus.classList.toggle('is-saved', hasSavedPassword);
+  passwordStatus.title = hasSavedPassword ? '已保存密码，留空自动使用' : '未保存密码';
+  passwordStatus.setAttribute('aria-label', hasSavedPassword ? '已保存密码' : '未保存密码');
+  document.querySelector('#cc-password-unsaved').toggleAttribute('hidden', hasSavedPassword);
+  document.querySelector('#cc-addr').textContent = `${username || '…'}@${host.hostname}:${host.port}`;
+  document.querySelector('#cc-auth').textContent = authLabel(changed ? 'password' : host.auth_type);
+  const pass=document.querySelector('#cc-pass');pass.required=changed;pass.placeholder=hasSavedPassword?'留空使用已保存密码':changed?'输入该用户的密码':'输入密码';
+}
+document.querySelector('#cc-user').addEventListener('input',()=>{document.querySelector('#cc-pass').value='';syncConnectUser();});
 document.querySelector('#connect-form').onsubmit = event => {
   event.preventDefault();
   const pass = document.querySelector('#cc-pass');
   const password = pass.value; pass.value = '';
+  const username=document.querySelector('#cc-user').value.trim();
   connectDialog.close();
-  openTerminal(connectHost, password);
+  openTerminal(connectHost, password, connectPlacement, username); connectPlacement = null;
 };
 
 /* ---------------- 终端会话 ---------------- */
-function updateWorkspace() { emptyState.hidden = sessions.size > 0; }
+function updateWorkspace() { emptyState.hidden = Boolean(workspaceTabs.get(activeTabId)?.sessionIds.size); }
+function createWorkspaceTab(label = '主页') {
+  const id = `tab-${nextTabId++}`, tab = document.createElement('div');
+  tab.className = 'tab'; tab.setAttribute('role', 'tab'); tab.tabIndex = -1; tab.id = id;tab.setAttribute('aria-controls','empty-state');
+  tab.innerHTML = `<span class="tab-state"></span><span class="tab-label">${escapeHtml(label)}</span><button class="tab-close" type="button" title="关闭 ${escapeHtml(label)}" aria-label="关闭 ${escapeHtml(label)}">✕</button>`;
+  const group = {id, tab, root:null, sessionIds:new Set(), focused:''}; workspaceTabs.set(id, group); tabstrip.append(tab);
+  tab.onclick = event => { if (!event.target.closest('.tab-close')) activateWorkspaceTab(id); };
+  tab.onauxclick = event => { if (event.button === 1) {event.preventDefault();closeWorkspaceTab(id);} };
+  tab.onkeydown = event => {
+    if (event.target !== tab) return;
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault();activateWorkspaceTab(id); }
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault();const rect=tab.getBoundingClientRect();openTabMenu(id,rect.left,rect.bottom); }
+    if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault();const ids=[...workspaceTabs.keys()],index=ids.indexOf(id);activateWorkspaceTab(ids[event.key==='Home'?0:event.key==='End'?ids.length-1:(index+(event.key==='ArrowRight'?1:-1)+ids.length)%ids.length]);workspaceTabs.get(activeTabId)?.tab.focus();}
+  };
+  tab.oncontextmenu = event => {event.preventDefault();openTabMenu(id,event.clientX,event.clientY);};
+  tab.querySelector('.tab-close').onclick = event => {event.stopPropagation();closeWorkspaceTab(id);};
+  return group;
+}
+function activateWorkspaceTab(id) {
+  const group = workspaceTabs.get(id); if (!group) return;
+  activeTabId = id; activeSessionId = group.focused;
+  const focused=sessions.get(group.focused);if(focused) {group.tab.dataset.st=focused.state;group.tab.querySelector('.tab-label').textContent=focused.host;group.tab.title=focused.host;const close=group.tab.querySelector('.tab-close');close.title=`关闭 ${focused.host}`;close.setAttribute('aria-label',`关闭 ${focused.host}`);}
+  for (const item of workspaceTabs.values()) {
+    const active = item.id === id; item.tab.setAttribute('aria-selected', String(active)); item.tab.tabIndex = active ? 0 : -1;
+    if (item.root) item.root.hidden = !active;
+  }
+  updateWorkspace(); updateUploadButton();
+  requestAnimationFrame(() => { for (const sessionId of group.sessionIds) { const session = sessions.get(sessionId);try {session.fitAddon.fit();if(sessionId===group.focused) session.terminal.focus();}catch(_){} } });
+  group.tab.scrollIntoView({block:'nearest',inline:'nearest'});
+}
+function newHomeTab() { closeTabMenu();const group=createWorkspaceTab();activateWorkspaceTab(group.id);return group; }
+function closeWorkspaceTab(id) {
+  const group=workspaceTabs.get(id);if(!group)return;
+  for (const sessionId of [...group.sessionIds]) closeSession(sessionId);
+  group.root?.remove();group.tab.remove();workspaceTabs.delete(id);
+  if(activeTabId===id) {activeTabId='';activeSessionId='';const next=[...workspaceTabs.keys()].at(-1);if(next)activateWorkspaceTab(next);}
+  updateWorkspace();updateUploadButton();closeTabMenu();
+}
 function setSessionState(session, state, label) {
   session.state = state;
-  session.tab.dataset.st = state;
-  session.tab.title = `${session.host} · ${label}`;
+  if(workspaceTabs.get(session.tabId)?.focused===session.id) {session.tab.dataset.st = state;session.tab.title = `${session.host} · ${label}`;}
   updateUploadButton();
+  if (screenLocked) updateScreenLockInfo();
 }
 function activateSession(id) {
   const session = sessions.get(id); if (!session) return;
-  activeSessionId = id;
-  updateUploadButton();
+  const group = workspaceTabs.get(session.tabId); group.focused = id;
+  activateWorkspaceTab(group.id);
   for (const item of sessions.values()) {
     const active = item.id === id;
-    item.pane.classList.toggle('active', active);
-    item.tab.setAttribute('aria-selected', String(active));
-    item.tab.tabIndex = active ? 0 : -1;
+    item.pane.classList.toggle('focused', active);
   }
-  requestAnimationFrame(() => { try { session.fitAddon.fit(); session.terminal.focus(); } catch (_) {} });
 }
-function openTerminal(host, password) {
+
+const tabMenu=document.querySelector('#tab-context-menu');let contextTabId='';
+function closeTabMenu() {tabMenu.hidden=true;contextTabId='';}
+function openTabMenu(id,x,y) {
+  closeTerminalMenu();
+  const group=workspaceTabs.get(id);if(!group||screenLocked)return;
+  contextTabId=id;tabMenu.hidden=false;
+  for(const button of tabMenu.querySelectorAll('[data-tab-action]')) button.disabled = ['vertical','horizontal'].includes(button.dataset.tabAction) && !group.sessionIds.size;
+  const rect=tabMenu.getBoundingClientRect();tabMenu.style.left=`${Math.max(8,Math.min(x,innerWidth-rect.width-8))}px`;tabMenu.style.top=`${Math.max(8,Math.min(y,innerHeight-rect.height-8))}px`;
+  tabMenu.querySelector('button').focus();
+}
+document.querySelector('#btn-new-tab').addEventListener('click',newHomeTab);
+tabMenu.addEventListener('click',event=>{
+  const action=event.target.closest('[data-tab-action]')?.dataset.tabAction,group=workspaceTabs.get(contextTabId);if(!action||!group)return;
+  const id=group.id;closeTabMenu();
+  if(action==='new')newHomeTab();
+  else if(action==='close')closeWorkspaceTab(id);
+  else if(action==='close-others') {for(const other of [...workspaceTabs.keys()])if(other!==id)closeWorkspaceTab(other);activateWorkspaceTab(id);}
+  else if(action==='close-all') {for(const other of [...workspaceTabs.keys()])closeWorkspaceTab(other);}
+  else {
+    const session=sessions.get(group.focused);if(!session) {if(action==='duplicate')newHomeTab();return;}
+    const host=hosts.find(item=>item.name===session.host);if(!host)return;
+    const placement=action==='duplicate'?{newTab:true}:{sessionId:session.id,direction:action};
+    if(session.user===host.user&&(host.save_password||host.auth_type==='private_key'))openTerminal(host.name,'',placement,session.user);else openConnect(host,placement,session.user);
+  }
+});
+tabMenu.addEventListener('keydown',event=>{
+  if(event.key==='Escape'||event.key==='Tab') {const id=contextTabId;event.preventDefault();closeTabMenu();workspaceTabs.get(id)?.tab.focus();}
+  else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
+    event.preventDefault();const buttons=[...tabMenu.querySelectorAll('button:not(:disabled)')],index=buttons.indexOf(document.activeElement);
+    buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();
+  }
+});
+document.addEventListener('pointerdown',event=>{if(!tabMenu.contains(event.target))closeTabMenu();});
+window.addEventListener('resize',closeTabMenu);
+
+const terminalMenu=document.querySelector('#terminal-context-menu'), terminalMenuMessage=document.querySelector('#terminal-menu-message');
+let contextTerminalId='', contextTerminalSelection='';
+function closeTerminalMenu() {terminalMenu.hidden=true;contextTerminalId='';contextTerminalSelection='';}
+function openTerminalMenu(session,event) {
+  if(screenLocked||!sessions.has(session.id))return;
+  event.preventDefault();event.stopPropagation();closeTabMenu();
+  const selection=session.terminal.getSelection();activateSession(session.id);
+  contextTerminalId=session.id;contextTerminalSelection=selection;terminalMenuMessage.hidden=true;terminalMenu.hidden=false;
+  for(const button of terminalMenu.querySelectorAll('[data-terminal-action]')) {
+    const action=button.dataset.terminalAction;
+    button.disabled=action==='copy'?!selection:action==='paste'?session.state!=='connected':false;
+  }
+  const bounds=terminalMenu.getBoundingClientRect();terminalMenu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-bounds.width-8))}px`;terminalMenu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-bounds.height-8))}px`;
+  requestAnimationFrame(()=>{if(!terminalMenu.hidden)terminalMenu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});});
+}
+terminalMenu.addEventListener('click',async event=>{
+  const button=event.target.closest('[data-terminal-action]'), session=sessions.get(contextTerminalId);if(!button||button.disabled||!session||screenLocked)return;
+  const action=button.dataset.terminalAction, selection=contextTerminalSelection;
+  try {
+    if(action==='copy') {
+      if(navigator.clipboard?.writeText&&window.isSecureContext)await navigator.clipboard.writeText(selection);
+      else {const field=document.createElement('textarea');field.className='clipboard-helper';field.value=selection;document.body.append(field);field.select();try {if(!document.execCommand('copy'))throw new Error('请使用 Ctrl+C 复制选中文字');}finally {field.remove();}}
+    } else if(action==='paste') {
+      if(!navigator.clipboard?.readText||!window.isSecureContext)throw new Error('请使用 Ctrl+V 粘贴');
+      let text;try {text=await navigator.clipboard.readText();}catch(_){throw new Error('无法读取剪贴板，请使用 Ctrl+V 粘贴');}
+      if(screenLocked||sessions.get(session.id)!==session||session.state!=='connected')return;
+      session.terminal.paste(text);
+    } else if(action==='select-all')session.terminal.selectAll();
+    else if(action==='clear')session.terminal.clear();
+    else if(action==='close')closeSession(session.id);
+    else {const host=hosts.find(item=>item.name===session.host);if(!host)return;const placement={sessionId:session.id,direction:action};if(session.user===host.user&&(host.save_password||host.auth_type==='private_key'))openTerminal(host.name,'',placement,session.user);else openConnect(host,placement,session.user);}
+    closeTerminalMenu();if(sessions.has(session.id)&&activeSessionId===session.id)session.terminal.focus();
+  }catch(error){if(contextTerminalId===session.id&&!screenLocked){terminalMenuMessage.textContent=error.message;terminalMenuMessage.hidden=false;const bounds=terminalMenu.getBoundingClientRect();terminalMenu.style.top=`${Math.max(8,Math.min(bounds.top,innerHeight-bounds.height-8))}px`;}}
+});
+terminalMenu.addEventListener('keydown',event=>{
+  if(event.key==='Escape'||event.key==='Tab') {event.preventDefault();const session=sessions.get(contextTerminalId);closeTerminalMenu();session?.terminal.focus();}
+  else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {event.preventDefault();const buttons=[...terminalMenu.querySelectorAll('button:not(:disabled)')],index=buttons.indexOf(document.activeElement);buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}
+});
+document.addEventListener('pointerdown',event=>{if(!terminalMenu.contains(event.target))closeTerminalMenu();});
+window.addEventListener('resize',closeTerminalMenu);
+function openTerminal(host, password, placement = null, username = hosts.find(item=>item.name===host)?.user || '') {
   const id = `terminal-${nextSessionId++}`;
-  const tab = document.createElement('div');
-  tab.className = 'tab'; tab.dataset.st = 'connecting'; tab.setAttribute('role', 'tab'); tab.tabIndex = -1;
-  tab.innerHTML = `<span class="tab-state"></span><span class="tab-label">${escapeHtml(host)}</span><button class="tab-close" type="button" title="关闭 ${escapeHtml(host)}" aria-label="关闭 ${escapeHtml(host)}">✕</button>`;
-  tabstrip.append(tab);
+  const source = placement?.sessionId && sessions.get(placement.sessionId);
+  let group = source ? workspaceTabs.get(source.tabId) : !placement && !workspaceTabs.get(activeTabId)?.sessionIds.size ? workspaceTabs.get(activeTabId) : null;
+  if(!group) group=createWorkspaceTab(host);
+  const tab=group.tab; tab.dataset.st='connecting';tab.querySelector('.tab-label').textContent=host;
   const pane = document.createElement('div');
   pane.className = 'pane'; pane.id = id; pane.setAttribute('role', 'tabpanel');
-  paneArea.append(pane);
+  pane.setAttribute('aria-label',host);pane.setAttribute('aria-labelledby',group.id);
+  if (source) {
+    const split=document.createElement('div');split.className=`terminal-split ${placement.direction}`;
+    source.pane.replaceWith(split);split.append(source.pane,pane);
+  } else {group.root=document.createElement('div');group.root.className='terminal-layout';group.root.id=`layout-${group.id}`;group.root.append(pane);paneArea.append(group.root);tab.setAttribute('aria-controls',group.root.id);}
   const terminal = new Terminal({
     cursorBlink: true, convertEol: true,
     fontFamily: 'Cascadia Mono,Cascadia Code,Consolas,monospace',
@@ -320,13 +602,18 @@ function openTerminal(host, password) {
   });
   const fitAddon = new FitAddon.FitAddon();
   terminal.loadAddon(fitAddon); terminal.open(pane);
-  const session = { id, host, tab, pane, terminal, fitAddon, socket: null, resizeObserver: null, state: 'connecting', auth: { password } };
-  sessions.set(id, session); updateWorkspace();
-  tab.onclick = event => { if (!event.target.closest('.tab-close')) activateSession(id); };
-  tab.onauxclick = event => { if (event.button === 1) { event.preventDefault(); closeSession(id); } };
-  tab.onkeydown = event => { if (event.target === tab && (event.key === 'Enter' || event.key === ' ')) activateSession(id); };
-  tab.querySelector('.tab-close').onclick = event => { event.stopPropagation(); closeSession(id); };
-  session.resizeObserver = new ResizeObserver(() => { if (activeSessionId === id) { try { fitAddon.fit(); } catch (_) {} } });
+  const paneClose = document.createElement('button');
+  paneClose.type = 'button'; paneClose.className = 'pane-close'; paneClose.title = '关闭当前分屏'; paneClose.setAttribute('aria-label', `关闭终端 ${host}`);
+  paneClose.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+  paneClose.addEventListener('pointerdown', event => event.stopPropagation());
+  paneClose.addEventListener('click', event => { event.stopPropagation(); closeSession(id); });
+  pane.append(paneClose);
+  const session = { id, host, user:username, tabId:group.id, tab, pane, terminal, fitAddon, socket: null, resizeObserver: null, state: 'connecting', auth: { password } };
+  group.sessionIds.add(id); sessions.set(id, session); updateWorkspace();
+  pane.addEventListener('pointerdown',()=>{if(activeSessionId!==id)activateSession(id);});
+  pane.addEventListener('focusin',()=>{if(activeSessionId!==id)activateSession(id);});
+  pane.addEventListener('contextmenu',event=>openTerminalMenu(session,event),true);
+  session.resizeObserver = new ResizeObserver(() => { if (activeTabId === group.id) { try { fitAddon.fit(); } catch (_) {} } });
   session.resizeObserver.observe(pane);
   activateSession(id);
   terminal.writeln('\x1b[38;5;108mxsh\x1b[0m connecting…');
@@ -335,13 +622,15 @@ function openTerminal(host, password) {
   session.socket = new WebSocket(socketURL);
   session.socket.onopen = () => {
     const auth = session.auth; session.auth = null;
-    sendTerminal(session, { type: 'connect', host, password: auth.password, cols: terminal.cols, rows: terminal.rows });
+    sendTerminal(session, { type: 'connect', host, user:username, password: auth.password, cols: terminal.cols, rows: terminal.rows });
     auth.password = ''; password = '';
   };
   session.socket.onmessage = event => {
+    if (!sessions.has(id)) return;
     const data = JSON.parse(event.data);
     if (data.type === 'output') terminal.write(data.data);
     if (data.type === 'connected') {
+      session.user = data.user || session.user;
       session.uploadSession = data.session;
       setSessionState(session, 'connected', '已连接');
       terminal.write('\r\n');
@@ -357,22 +646,30 @@ function openTerminal(host, password) {
   terminal.onData(data => sendTerminal(session, { type: 'input', data }));
   terminal.onResize(size => sendTerminal(session, { type: 'resize', cols: size.cols, rows: size.rows }));
 }
-function sendTerminal(session, message) { if (session.socket?.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify(message)); }
+function sendTerminal(session, message) { if (screenLocked && message.type === 'input') return; if (session.socket?.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify(message)); }
 function closeSession(id) {
+  if(contextTerminalId===id)closeTerminalMenu();
   const session = sessions.get(id); if (!session) return;
   sendTerminal(session, { type: 'close' });
   if (session.socket) session.socket.close();
   session.resizeObserver.disconnect(); session.terminal.dispose();
-  session.tab.remove(); session.pane.remove();
-  sessions.delete(id); updateWorkspace();
-  if (!sessions.size) activeSessionId = '';
-  else if (activeSessionId === id) activateSession(Array.from(sessions.keys()).at(-1));
+  const group=workspaceTabs.get(session.tabId), parent=session.pane.parentElement;
+  session.pane.remove(); sessions.delete(id);group?.sessionIds.delete(id);
+  if(parent?.classList.contains('terminal-split')&&parent.children.length===1)parent.replaceWith(parent.firstElementChild);
+  if(group&&!group.sessionIds.size) {group.root?.remove();group.tab.remove();workspaceTabs.delete(group.id);if(activeTabId===group.id) {activeTabId='';activeSessionId='';const next=[...workspaceTabs.keys()].at(-1);if(next)activateWorkspaceTab(next);}}
+  else if(group&&group.focused===id) {group.focused=[...group.sessionIds].at(-1);if(activeTabId===group.id)activateSession(group.focused);}
+  updateWorkspace();
   updateUploadButton();
 }
 
 function updateUploadButton() {
   const session = sessions.get(activeSessionId);
-  document.querySelector('#btn-upload').disabled = session?.state !== 'connected' || !session?.uploadSession;
+  const available = session?.state === 'connected' && Boolean(session.uploadSession);
+  for (const id of ['btn-upload', 'btn-password']) {
+    const button = document.getElementById(id);
+    button.hidden = !available;
+    button.disabled = !available;
+  }
 }
 
 /* ---------------- 空状态最近使用 chips ---------------- */
@@ -404,16 +701,59 @@ document.addEventListener('keydown', event => {
   }
 });
 
-/* ---------------- 锁定 ---------------- */
-document.querySelector('#btn-lock').addEventListener('click', async () => {
+/* ---------------- 退出与锁屏 ---------------- */
+async function logoutWeb() {
   for (const id of Array.from(sessions.keys())) closeSession(id);
-  await fetch('api/logout', { method: 'POST', headers: { 'X-XSH-Token': token } });
+  await fetch('api/logout', { method:'POST', headers:{'X-XSH-Token':token} });
   token = ''; await lockView();
+}
+document.querySelector('#btn-logout').addEventListener('click', logoutWeb);
+document.querySelector('#screen-lock-logout').addEventListener('click', logoutWeb);
+function updateScreenLockInfo() {
+  const count = Array.from(sessions.values()).filter(session => session.state === 'connected').length;
+  document.querySelector('#screen-lock-connections').textContent = count ? `${count} 个连接保持中` : '登录状态已保留';
+}
+function showScreenLock() {
+  if (!currentUser) return;
+  closeTabMenu();
+  closeTerminalMenu();
+  screenLocked = true; appEl.hidden = true; closeDrawer();
+  for (const dialog of document.querySelectorAll('dialog[open]')) if (dialog !== screenLockDialog) dialog.close();
+  document.querySelector('#screen-lock-user').textContent = currentUser.username;
+  document.querySelector('#screen-lock-error').textContent = '';
+  document.querySelector('#screen-unlock-password').value = '';
+  updateScreenLockInfo();
+  if (!screenLockDialog.open) screenLockDialog.showModal();
+  document.querySelector('#screen-unlock-password').focus();
+}
+document.querySelector('#btn-screen-lock').addEventListener('click', async () => {
+  try {
+    const response = await fetch('api/lock',{method:'POST',headers:{'X-XSH-Token':token}});
+    if (response.status === 401) { await lockView(); return; }
+    if (!response.ok) throw new Error((await response.text()).trim());
+    showScreenLock();
+  } catch(error) { console.error(error.message); }
+});
+screenLockDialog.addEventListener('cancel', event => event.preventDefault());
+document.querySelector('#screen-unlock-form').addEventListener('submit', async event => {
+  event.preventDefault(); const submit = event.submitter, input = document.querySelector('#screen-unlock-password');
+  submit.disabled = true;
+  try {
+    const response = await fetch('api/unlock',{method:'POST',headers:{'Content-Type':'application/json','X-XSH-Token':token},body:JSON.stringify({password:input.value})});
+    input.value = '';
+    if (response.status === 401) { await lockView(); return; }
+    if (!response.ok) throw new Error((await response.text()).trim());
+    if (!await loadHosts()) return;
+    screenLocked = false; screenLockDialog.close();
+    const active = sessions.get(activeSessionId);
+    if (active) requestAnimationFrame(() => { try { active.fitAddon.fit(); active.terminal.focus(); } catch (_) {} });
+  } catch(error) { document.querySelector('#screen-lock-error').textContent = error.message; input.focus(); }
+  finally { submit.disabled = false; }
 });
 /* 有活跃 SSH 会话时，浏览器关闭标签/窗口（含 Ctrl+W / Ctrl+Shift+W）会触发原生「离开确认」，
    取消即可保住会话；无会话或处于登录页时不打扰。 */
 window.addEventListener('beforeunload', event => {
-  if (appEl.hidden || sessions.size === 0) return;
+  if (!currentUser || sessions.size === 0) return;
   event.preventDefault();
   event.returnValue = '';
 });
@@ -434,7 +774,6 @@ for (const button of document.querySelectorAll('[data-eye]')) {
 /* ============================================================
    主题切换：深/亮（持久化）＋ xterm 联动
    ============================================================ */
-const themeToggle = document.querySelector('#theme-toggle');
 function termTheme() {
   const css = getComputedStyle(document.documentElement);
   const value = n => css.getPropertyValue(n).trim();
@@ -457,24 +796,308 @@ function applyTerminalTheme() {
 function setTheme(mode) {
   document.documentElement.setAttribute('data-theme', mode);
   try { localStorage.setItem('xsh-theme', mode); } catch (_) {}
-  const light = mode === 'light';
-  if (themeToggle) {
-    themeToggle.setAttribute('aria-pressed', String(light));
-    themeToggle.innerHTML = light
-      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
-      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>';
-  }
+  for (const button of document.querySelectorAll('[data-theme-choice]')) button.setAttribute('aria-pressed', String(button.dataset.themeChoice === mode));
   applyTerminalTheme();
 }
 let savedTheme = 'dark';
 try { savedTheme = localStorage.getItem('xsh-theme') || 'dark'; } catch (_) {}
 setTheme(savedTheme);
-if (themeToggle) themeToggle.addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+for (const button of document.querySelectorAll('[data-theme-choice]')) button.addEventListener('click', () => setTheme(button.dataset.themeChoice));
 
 async function initialize() {
   const statusResponse = await fetch('api/auth/status');
   const status = statusResponse.ok ? await statusResponse.json() : {};
-  if (status.authenticated) await loadHosts();
+  if (status.authenticated && status.locked) { currentUser = status.user; token = status.token; showScreenLock(); }
+  else if (status.authenticated) await loadHosts();
   else await lockView(status);
 }
 initialize().catch(async error => { await lockView(); document.querySelector('#master-error').textContent = error.message; });
+
+
+/* ---------------- 远程用户密码 ---------------- */
+const passwordDialog = document.querySelector('#dlg-password');
+const passwordForm = document.querySelector('#password-form');
+let passwordSession = null, passwordBusy = false, passwordChanged = false, passwordUncertain = false;
+function passwordMessage(message, error = false) {
+  const el = document.querySelector('#password-msg');
+  el.textContent = message; el.className = error ? 'form-msg error' : 'form-msg form-ok';
+}
+function randomPassword(length) {
+  if (!Number.isInteger(length) || length < 12 || length > 128) throw new Error('随机密码长度须为 12–128。');
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*_-+=?';
+  const limit = 256 - (256 % alphabet.length);
+  for (;;) {
+    let result = '';
+    while (result.length < length) {
+      const bytes = crypto.getRandomValues(new Uint8Array(length * 2));
+      for (const value of bytes) {
+        if (value < limit) result += alphabet[value % alphabet.length];
+        if (result.length === length) break;
+      }
+    }
+    if (/[A-Z]/.test(result) && /[a-z]/.test(result) && /[0-9]/.test(result) && /[^A-Za-z0-9]/.test(result)) return result;
+  }
+}
+async function copyPassword(input) {
+  if (!input.value) throw new Error('请先输入或生成密码。');
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(input.value); return;
+  }
+  // HTTP deployments may lack the Clipboard API. Keep the temporary field in
+  // the active dialog, because modal dialogs make the rest of the page inert.
+  const temporary = document.createElement('textarea');
+  temporary.value = input.value; temporary.className = 'clipboard-helper';
+  (input.closest('dialog') || document.body).append(temporary);
+  temporary.select();
+  try { if (!document.execCommand('copy')) throw new Error('浏览器未允许复制，请显示密码后手动复制。'); }
+  finally { temporary.remove(); input.focus(); }
+}
+for (const button of document.querySelectorAll('[data-generate], [data-copy]')) {
+  button.addEventListener('click', async () => {
+    const id = button.dataset.generate || button.dataset.copy;
+    const input = document.getElementById(id);
+    const status = document.querySelector('#password-msg');
+    status.classList.remove('error');
+    try {
+      if (button.dataset.generate) {
+        input.value = randomPassword(20);
+        if (id === 'password-new') document.querySelector('#password-confirm').value = input.value;
+        status.textContent = '已生成随机密码，请复制并妥善保存。';
+      } else { await copyPassword(input); status.textContent = '密码已复制。'; }
+    } catch (error) { status.textContent = error.message; status.classList.add('error'); }
+  });
+}
+let currentPasswordRequest = 0;
+async function useCurrentPassword(action) {
+  if (!passwordSession || passwordBusy || passwordChanged || passwordUncertain) return;
+  const input = document.querySelector('#password-current');
+  const toggle = document.querySelector('#password-current-toggle');
+  const copy = document.querySelector('#password-current-copy');
+  if (action === 'show' && input.type === 'text') {
+    input.type = 'password'; toggle.setAttribute('aria-label', '显示当前密码'); toggle.title = '显示当前密码'; return;
+  }
+  const request = ++currentPasswordRequest, session = passwordSession;
+  toggle.disabled = copy.disabled = true;
+  try {
+    if (!input.value) {
+      const response = await fetch('api/password/current', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-XSH-Token': token },
+        body: JSON.stringify({ session: session.uploadSession })
+      });
+      if (!response.ok) throw new Error((await response.text()).trim());
+      const data = await response.json();
+      if (request !== currentPasswordRequest || passwordSession !== session || !passwordDialog.open || passwordBusy || passwordChanged || passwordUncertain) return;
+      if (!input.value) input.value = data.password;
+    }
+    if (action === 'copy') { await copyPassword(input); passwordMessage('当前密码已复制。'); }
+    else { input.type = 'text'; toggle.setAttribute('aria-label', '隐藏当前密码'); toggle.title = '隐藏当前密码'; }
+  } catch (error) {
+    if (request === currentPasswordRequest && passwordDialog.open) passwordMessage(error.message, true);
+  } finally {
+    if (request === currentPasswordRequest) toggle.disabled = copy.disabled = passwordBusy || passwordChanged || passwordUncertain;
+  }
+}
+document.querySelector('#password-current-toggle').addEventListener('click', () => useCurrentPassword('show'));
+document.querySelector('#password-current-copy').addEventListener('click', () => useCurrentPassword('copy'));
+
+document.querySelector('#btn-password').addEventListener('click', () => {
+  const session = sessions.get(activeSessionId);
+  if (session?.state !== 'connected' || !session.uploadSession) return;
+  currentPasswordRequest++;
+  passwordSession = session; passwordChanged = false; passwordUncertain = false; passwordForm.reset();
+  document.querySelector('#password-current').type = 'password';
+  document.querySelector('#password-current-toggle').setAttribute('aria-label', '显示当前密码');
+  document.querySelector('#password-current-toggle').title = '显示当前密码';
+  for (const control of passwordDialog.querySelectorAll('button, input')) control.disabled = false;
+  document.querySelector('#password-new').type = 'password'; passwordMessage('');
+  const profile = hosts.find(host => host.name === session.host);
+  document.querySelector('#password-target').textContent = profile ? `${session.host} · ${session.user || profile.user}@${profile.hostname}:${profile.port}` : `${session.host} · 当前登录用户`;
+  document.querySelector('#password-submit').disabled = false;
+  passwordDialog.showModal(); document.querySelector('#password-current').focus();
+});
+passwordDialog.addEventListener('cancel', event => { if (passwordBusy) event.preventDefault(); });
+passwordDialog.addEventListener('close', () => { currentPasswordRequest++; passwordForm.reset(); document.querySelector('#password-current').type = 'password'; passwordSession = null; passwordMessage(''); });
+passwordForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (passwordBusy || passwordChanged || passwordUncertain || !passwordSession) return;
+  const next = document.querySelector('#password-new').value;
+  const confirmation = document.querySelector('#password-confirm').value;
+  if (next !== confirmation) { passwordMessage('两次输入的新密码不一致。', true); return; }
+  if (passwordSession.state !== 'connected') { passwordMessage('终端已断开，请重新连接。', true); return; }
+  passwordBusy = true;
+  for (const control of passwordDialog.querySelectorAll('button, input')) control.disabled = true;
+  passwordMessage('正在修改远程密码，请等待服务器确认…');
+  try {
+    const response = await fetch('api/password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-XSH-Token': token },
+      body: JSON.stringify({ session: passwordSession.uploadSession, current_password: document.querySelector('#password-current').value, password: next, confirm: confirmation })
+    });
+    if (!response.ok) {
+      passwordUncertain = response.status === 504;
+      throw new Error((await response.text()).trim());
+    }
+    const result = await response.json(); passwordChanged = Boolean(result.changed);
+    passwordMessage(result.message);
+    document.querySelector('#password-current').value = '';
+    document.querySelector('#password-confirm').value = '';
+  } catch (error) {
+    if (error instanceof TypeError) passwordUncertain = true;
+    const message = passwordUncertain ? '未收到明确的改密结果，请先验证远程密码。为避免重复修改，本次提交已停止；新密码仍可复制。' : error.message;
+    passwordMessage(message, true);
+  }
+  finally {
+    passwordBusy = false;
+    for (const control of passwordDialog.querySelectorAll('button, input')) control.disabled = false;
+    document.querySelector('#password-submit').disabled = passwordChanged || passwordUncertain;
+    if (passwordChanged || passwordUncertain) {
+      for (const control of passwordDialog.querySelectorAll('input, [data-generate], #password-current-toggle, #password-current-copy')) control.disabled = true;
+    }
+  }
+});
+
+hostDialog.addEventListener('close', () => { hostField('password').value = ''; hostField('private_key').value = ''; });
+
+
+/* ---------------- 账号与配置分享 ---------------- */
+async function accountRequest(path, method = 'GET', body) {
+  const generation = authGeneration;
+  const response = await fetch(path, { method, headers:{'Content-Type':'application/json','X-XSH-Token':token}, body:body ? JSON.stringify(body) : undefined });
+  if (generation !== authGeneration) throw new DOMException('账号已切换', 'AbortError');
+  if (response.status === 401) { await lockView(); throw new Error('登录已失效，请重新登录。'); }
+  if (response.status === 423) { showScreenLock(); throw new DOMException('屏幕已锁定', 'AbortError'); }
+  if (!response.ok) throw new Error((await response.text()).trim());
+  const result = response.status === 204 ? null : await response.json();
+  if (generation !== authGeneration) throw new DOMException('账号已切换', 'AbortError');
+  return result;
+}
+const shareDialog = document.querySelector('#dlg-share'), inboxDialog = document.querySelector('#dlg-inbox'), accountDialog = document.querySelector('#dlg-settings');
+const sharePicker = document.querySelector('#share-picker'), shareToggle = document.querySelector('#share-recipient-toggle'), sharePanel = document.querySelector('#share-recipient-panel'), shareSearch = document.querySelector('#share-recipient-search'), shareSubmit = document.querySelector('#share-submit');
+let shareRecipients = [], selectedRecipients = new Set(), shareRevision = 0, shareSending = false;
+function setSharePickerOpen(open) {
+  sharePanel.hidden = !open; shareToggle.setAttribute('aria-expanded', String(open));
+  if (open) shareSearch.focus();
+}
+function updateShareSelection() {
+  const names = [...selectedRecipients];
+  document.querySelector('#share-recipient-summary').textContent = names.length > 2 ? `${names.slice(0, 2).join('、')} 等 ${names.length} 个账号` : names.join('、') || '请选择接收账号';
+  shareSubmit.disabled = shareSending || !names.length;
+}
+function renderShareRecipients() {
+  const list = document.querySelector('#share-recipient-options'), query = shareSearch.value.trim().toLowerCase();
+  list.replaceChildren();
+  const visible = shareRecipients.filter(item => item.username.toLowerCase().includes(query));
+  if (!visible.length) { const empty = document.createElement('p'); empty.className = 'share-picker-empty'; empty.textContent = shareRecipients.length ? '没有匹配的账号' : '暂无可分享账号'; list.append(empty); }
+  for (const item of visible) {
+    const label = document.createElement('label'), checkbox = document.createElement('input'), name = document.createElement('span');
+    label.className = 'share-picker-option'; checkbox.type = 'checkbox'; checkbox.checked = selectedRecipients.has(item.username); name.textContent = item.username;
+    checkbox.addEventListener('change', () => { if (checkbox.checked) selectedRecipients.add(item.username); else selectedRecipients.delete(item.username); updateShareSelection(); });
+    label.append(checkbox, name); list.append(label);
+  }
+}
+shareToggle.addEventListener('click', () => setSharePickerOpen(sharePanel.hidden));
+shareSearch.addEventListener('input', renderShareRecipients);
+shareSearch.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
+sharePicker.addEventListener('keydown', event => { if (event.key === 'Escape' && !sharePanel.hidden) { event.preventDefault(); event.stopPropagation(); setSharePickerOpen(false); shareToggle.focus(); } });
+document.addEventListener('click', event => { if (!sharePicker.contains(event.target)) setSharePickerOpen(false); });
+shareDialog.addEventListener('close', () => { shareRevision++; selectedRecipients.clear(); shareRecipients = []; setSharePickerOpen(false); });
+document.querySelector('#btn-share-host').addEventListener('click', async () => {
+  sharingHost = editingOriginal; hostDialog.close(); document.querySelector('#share-form').reset();
+  const revision = ++shareRevision; selectedRecipients.clear(); shareRecipients = []; shareSending = false; updateShareSelection(); setSharePickerOpen(false); shareToggle.disabled = true;
+  document.querySelector('#share-target').textContent = sharingHost; document.querySelector('#share-msg').textContent = ''; shareDialog.showModal();
+  try { const items = await accountRequest('api/share-recipients'); if (revision !== shareRevision || !shareDialog.open) return; shareRecipients = items; renderShareRecipients(); shareToggle.disabled = false; }
+  catch (error) { if (revision === shareRevision && error.name !== 'AbortError') document.querySelector('#share-msg').textContent = error.message; }
+});
+document.querySelector('#share-form').addEventListener('submit', async event => {
+  event.preventDefault(); if (shareSending || !selectedRecipients.size) return;
+  const revision = shareRevision; shareSending = true; updateShareSelection(); document.querySelector('#share-msg').textContent = '';
+  try { await accountRequest('api/shares','POST',{name:sharingHost,recipients:[...selectedRecipients]}); if (revision === shareRevision) shareDialog.close(); }
+  catch (error) { if (revision === shareRevision && error.name !== 'AbortError') document.querySelector('#share-msg').textContent = error.message; }
+  finally { if (revision === shareRevision) { shareSending = false; updateShareSelection(); } }
+});
+async function loadInbox() {
+  const items = await accountRequest('api/shares'), list = document.querySelector('#inbox-list');
+  list.replaceChildren();
+  if (!items.length) { list.textContent = '暂无分享的配置'; return; }
+  for (const item of items) {
+    const row = document.createElement('div'); row.className = 'account-list-row';
+    const text = document.createElement('div'); text.className = 'account-list-meta';
+    const title = document.createElement('strong'); title.textContent = item.config.name;
+    const detail = document.createElement('span'); detail.className = 'hint'; detail.textContent = `${item.config.hostname}:${item.config.port} · 来自 ${item.sender}`;
+    text.append(title, detail);
+    const accept = document.createElement('button'); accept.type = 'button'; accept.className = 'btn btn-primary'; accept.textContent = '添加';
+    accept.onclick = () => { inboxDialog.close(); openHostModal({...item.config,user:'',auth_type:'auto',save_password:false},item.id); };
+    const reject = document.createElement('button'); reject.type = 'button'; reject.className = 'btn btn-subtle'; reject.textContent = '忽略';
+    reject.onclick = async () => { try { await accountRequest('api/shares','DELETE',{id:item.id}); await loadInbox(); } catch(error) { document.querySelector('#inbox-msg').textContent = error.message; } };
+    row.append(text,accept,reject); list.append(row);
+  }
+}
+document.querySelector('#btn-shares').addEventListener('click', async () => {
+  document.querySelector('#inbox-msg').textContent = ''; inboxDialog.showModal();
+  try { await loadInbox(); } catch(error) { document.querySelector('#inbox-msg').textContent = error.message; }
+});
+function renderUsers() {
+  const query = document.querySelector('#users-search').value.trim().toLowerCase(), filter = document.querySelector('#users-filter').value;
+  const visible = settingsUsers.filter(user => user.username.toLowerCase().includes(query) && (filter === 'all' || (filter === 'disabled') === user.disabled));
+  const body = document.querySelector('#account-users'); body.replaceChildren();
+  document.querySelector('#users-count').textContent = settingsUsers.length;
+  document.querySelector('#users-summary').textContent = `共 ${settingsUsers.length} 位用户 · ${settingsUsers.filter(user => !user.disabled).length} 位已启用`;
+  if (!visible.length) {
+    const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = 4; cell.className = 'users-empty'; cell.textContent = '没有匹配的用户'; row.append(cell); body.append(row); return;
+  }
+  for (const user of visible) {
+    const row = document.createElement('tr');
+    const identity = document.createElement('td'), person = document.createElement('div'); person.className = 'users-person';
+    const avatar = document.createElement('span'); avatar.className = 'users-avatar'; avatar.textContent = user.username.charAt(0).toUpperCase();
+    const name = document.createElement('span'); name.textContent = user.username; person.append(avatar,name);
+    if (user.id === currentUser?.id) { const self = document.createElement('small'); self.className = 'users-self'; self.textContent = '你'; person.append(self); }
+    identity.append(person);
+    const role = document.createElement('td'), roleBadge = document.createElement('span'); roleBadge.className = 'users-role'; roleBadge.textContent = user.admin ? '管理员' : '成员'; role.append(roleBadge);
+    const state = document.createElement('td'), status = document.createElement('span'); status.className = `users-state${user.disabled ? ' disabled' : ''}`; status.textContent = user.disabled ? '已停用' : '已启用'; state.append(status);
+    const actions = document.createElement('td'); actions.className = 'users-actions';
+    if (user.admin) { const label = document.createElement('span'); label.className = 'users-no-action'; label.textContent = '—'; actions.append(label); }
+    else {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'users-status-action'; button.textContent = user.disabled ? '启用' : '停用'; button.setAttribute('aria-label', `${button.textContent} ${user.username}`);
+      button.onclick = async () => {
+        button.disabled = true;
+        try { await accountRequest('api/users','PUT',{id:user.id,disabled:!user.disabled}); await loadUsers(); }
+        catch(error) { document.querySelector('#account-msg').textContent = error.message; button.disabled = false; }
+      }; actions.append(button);
+    }
+    row.append(identity,role,state,actions); body.append(row);
+  }
+}
+async function loadUsers() { if (!currentUser?.admin) return; settingsUsers = await accountRequest('api/users'); renderUsers(); }
+async function selectSettingsTab(tab) {
+  if (tab === 'users' && !currentUser?.admin) tab = 'account';
+  for (const button of document.querySelectorAll('[data-settings-tab]')) { const active = button.dataset.settingsTab === tab; button.classList.toggle('active',active); if (active) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current'); }
+  for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== tab;
+  document.querySelector('#account-msg').textContent = '';
+  if (tab === 'users') { try { await loadUsers(); } catch(error) { document.querySelector('#account-msg').textContent = error.message; } }
+}
+for (const button of document.querySelectorAll('[data-settings-tab]')) button.addEventListener('click', () => selectSettingsTab(button.dataset.settingsTab));
+document.querySelector('#users-search').addEventListener('input',renderUsers);
+document.querySelector('#users-filter').addEventListener('change',renderUsers);
+document.querySelector('#btn-settings').addEventListener('click', () => {
+  const username = currentUser?.username || '', role = currentUser?.admin ? '管理员' : '成员';
+  for (const id of ['account-name','account-profile-name']) document.getElementById(id).textContent = username;
+  for (const id of ['account-role','account-profile-role']) document.getElementById(id).textContent = role;
+  for (const id of ['settings-avatar','account-profile-avatar']) document.getElementById(id).textContent = username.charAt(0).toUpperCase();
+  document.querySelector('#settings-nav-users').hidden = !currentUser?.admin;
+  selectSettingsTab('account'); accountDialog.showModal();
+});
+accountDialog.addEventListener('close', () => { document.querySelector('#account-password-form').reset(); settingsUsers = []; document.querySelector('#account-users').replaceChildren(); });
+const createUserDialog = document.querySelector('#dlg-create-user');
+document.querySelector('#btn-create-user').addEventListener('click', () => { document.querySelector('#user-create-form').reset(); document.querySelector('#user-create-password').type = 'password'; document.querySelector('#user-create-msg').textContent = ''; createUserDialog.showModal(); document.querySelector('#user-create-name').focus(); });
+createUserDialog.addEventListener('close', () => document.querySelector('#user-create-form').reset());
+document.querySelector('#user-create-form').addEventListener('submit', async event => {
+  event.preventDefault(); const submit = event.submitter; submit.disabled = true;
+  try { await accountRequest('api/users','POST',{username:document.querySelector('#user-create-name').value,password:document.querySelector('#user-create-password').value}); event.target.reset(); createUserDialog.close(); await loadUsers(); }
+  catch(error) { document.querySelector('#user-create-msg').textContent = error.message; }
+  finally { submit.disabled = false; }
+});
+document.querySelector('#account-password-form').addEventListener('submit', async event => {
+  event.preventDefault(); const submit = event.submitter; submit.disabled = true;
+  try { await accountRequest('api/account/password','POST',{current_password:document.querySelector('#account-current').value,password:document.querySelector('#account-new').value,confirm:document.querySelector('#account-confirm').value}); await lockView(); }
+  catch(error) { document.querySelector('#account-msg').textContent = error.message; }
+  finally { submit.disabled = false; }
+});

@@ -2,7 +2,9 @@ package credential
 
 import (
 	"errors"
+	"github.com/zzqjlcn/xsh/internal/database"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -121,4 +123,55 @@ func resetVaultForTest() {
 	currentVault.salt = nil
 	currentVault.key = nil
 	currentVault.passwords = nil
+}
+
+func TestLegacyVaultMigrationPreservesEncryption(t *testing.T) {
+	t.Setenv("XSH_CONFIG_HOME", t.TempDir())
+	resetVaultForTest()
+	t.Cleanup(resetVaultForTest)
+	responses := []string{"migration-master-password", "migration-master-password"}
+	if err := SetVaultPassword("legacy", "private-server-secret", promptFrom(&responses)); err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := database.ReadVault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetVaultForTest()
+	legacyDir := t.TempDir()
+	t.Setenv("XSH_CONFIG_HOME", legacyDir)
+	legacyPath := filepath.Join(legacyDir, "secrets.db")
+	if err := os.WriteFile(legacyPath, encrypted, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UnlockVault("migration-master-password"); err != nil {
+		t.Fatal(err)
+	}
+	password, found, err := getVaultPassword("legacy", nil)
+	if err != nil || !found || password != "private-server-secret" {
+		t.Fatalf("migrated credential: found=%v err=%v", found, err)
+	}
+	if err := SetVaultPassword("legacy", "replacement-server-secret", nil); err != nil {
+		t.Fatal(err)
+	}
+	dbPath, _ := database.Path()
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "private-server-secret") || strings.Contains(string(data), "replacement-server-secret") || strings.Contains(string(data), "migration-master-password") {
+		t.Fatal("plaintext secret in SQLite")
+	}
+	backup, err := os.ReadFile(legacyPath)
+	if err != nil || string(backup) != string(encrypted) {
+		t.Fatal("legacy backup modified")
+	}
+	resetVaultForTest()
+	if err := UnlockVault("migration-master-password"); err != nil {
+		t.Fatal(err)
+	}
+	password, found, err = getVaultPassword("legacy", nil)
+	if err != nil || !found || password != "replacement-server-secret" {
+		t.Fatal("SQLite update not persisted")
+	}
 }

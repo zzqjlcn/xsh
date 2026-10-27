@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 )
 
 type remoteEntry struct {
@@ -35,12 +34,17 @@ func (s *server) remoteFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "终端连接已关闭，请重新连接。", http.StatusConflict)
 		return
 	}
+	target := connection.(*webConnection)
+	if !ownedConnection(requestSession(r), target.UserID, target.SessionID) {
+		http.Error(w, "connection not found", http.StatusNotFound)
+		return
+	}
 	value := r.URL.Query().Get("path")
 	if strings.ContainsRune(value, 0) {
 		http.Error(w, "路径无效。", http.StatusBadRequest)
 		return
 	}
-	client, err := sftp.NewClient(connection.(*ssh.Client))
+	client, err := sftp.NewClient(target.Client)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

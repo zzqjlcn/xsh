@@ -1,13 +1,10 @@
 package webui
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
+	"context"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,20 +13,19 @@ import (
 	"sync"
 
 	"github.com/zzqjlcn/xsh/internal/config"
-	"github.com/zzqjlcn/xsh/internal/credential"
+	"github.com/zzqjlcn/xsh/internal/webstore"
 )
 
 //go:embed static/*
 var assets embed.FS
 
 type server struct {
-	mu        sync.Mutex
-	token     string
-	session   string
-	sessionMu sync.RWMutex
-	remote    bool
-	rootPath  string
-	uploads   sync.Map // connection ID -> *ssh.Client
+	mu              sync.Mutex
+	auth            authSessions
+	remote          bool
+	rootPath        string
+	passwordTargets sync.Map
+	uploads         sync.Map // connection ID -> *webConnection
 }
 
 const sessionCookie = "xsh_web_session"
@@ -67,16 +63,9 @@ func NewForHostAndRootPath(bindHost, rootPath string) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	var tokenSecret, sessionSecret [32]byte
-	if _, err := rand.Read(tokenSecret[:]); err != nil {
-		return nil, err
-	}
-	if _, err := rand.Read(sessionSecret[:]); err != nil {
-		return nil, err
-	}
 	bindIP := net.ParseIP(bindHost)
 	localOnly := strings.EqualFold(bindHost, "localhost") || bindIP != nil && bindIP.IsLoopback()
-	s := &server{token: hex.EncodeToString(tokenSecret[:]), session: hex.EncodeToString(sessionSecret[:]), remote: !localOnly, rootPath: rootPath}
+	s := &server{remote: !localOnly, rootPath: rootPath}
 	handler := http.StripPrefix(strings.TrimSuffix(rootPath, "/"), http.HandlerFunc(s.serve))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rootPath != "/" && r.URL.Path == strings.TrimSuffix(rootPath, "/") {
@@ -119,11 +108,16 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/ws/terminal" {
-		if !s.authenticated(r) {
-			http.Error(w, "authentication required", http.StatusUnauthorized)
+		session := s.lookupSession(r)
+		if session == nil {
+			http.Error(w, "authentication required", 401)
 			return
 		}
-		s.terminal(w, r)
+		if s.sessionLocked(session) {
+			http.Error(w, "屏幕已锁定，请先解锁。", http.StatusLocked)
+			return
+		}
+		s.terminal(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, session)))
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -135,16 +129,30 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 			s.login(w, r)
 			return
 		}
-		if !s.authenticated(r) {
-			http.Error(w, "authentication required", http.StatusUnauthorized)
+		session := s.lookupSession(r)
+		if session == nil {
+			http.Error(w, "authentication required", 401)
 			return
 		}
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		stop := context.AfterFunc(session.Context, cancel)
+		defer stop()
+		r = r.WithContext(context.WithValue(ctx, sessionContextKey{}, session))
 		if r.URL.Path == "/api/logout" {
 			s.logout(w, r)
 			return
 		}
-		if r.Method != http.MethodGet && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-XSH-Token")), []byte(s.token)) != 1 {
-			http.Error(w, "invalid request token", http.StatusForbidden)
+		if r.Method != http.MethodGet && !subtleToken(r.Header.Get("X-XSH-Token"), session.Token) {
+			http.Error(w, "invalid request token", 403)
+			return
+		}
+		if r.URL.Path == "/api/lock" || r.URL.Path == "/api/unlock" {
+			s.screenLock(w, r)
+			return
+		}
+		if s.sessionLocked(session) {
+			http.Error(w, "屏幕已锁定，请先解锁。", http.StatusLocked)
 			return
 		}
 		s.api(w, r)
@@ -192,79 +200,19 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) authStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(struct {
-		SetupRequired bool `json:"setup_required"`
-		Authenticated bool `json:"authenticated"`
-	}{!credential.VaultExists(), s.authenticated(r)})
-}
-
-func (s *server) authenticated(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return false
-	}
-	s.sessionMu.RLock()
-	defer s.sessionMu.RUnlock()
-	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.session)) == 1
-}
-
-func (s *server) login(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	var input struct {
-		Password string `json:"password"`
-		Create   bool   `json:"create"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	var err error
-	if credential.VaultExists() {
-		err = credential.UnlockVault(input.Password)
-	} else if input.Create {
-		err = credential.CreateVault(input.Password)
-	} else {
-		http.Error(w, "password vault setup is required", http.StatusConflict)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: s.session, Path: s.rootPath, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(struct {
-		Token string `json:"token"`
-	}{s.token})
-}
-
-func (s *server) logout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-XSH-Token")), []byte(s.token)) != 1 {
-		http.Error(w, "invalid request", http.StatusForbidden)
-		return
-	}
-	credential.LockVault()
-	var next [32]byte
-	if _, err := rand.Read(next[:]); err == nil {
-		s.sessionMu.Lock()
-		s.session = hex.EncodeToString(next[:])
-		s.sessionMu.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: s.rootPath, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *server) api(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/hosts/test" {
+		s.testConnection(w, r)
+		return
+	}
+	if r.URL.Path == "/api/password/current" {
+		s.currentPassword(w, r)
+		return
+	}
+	if r.URL.Path == "/api/password" {
+		s.changePassword(w, r)
+		return
+	}
 	if r.URL.Path == "/api/files" || r.URL.Path == "/api/download" {
 		s.remoteFiles(w, r)
 		return
@@ -273,102 +221,84 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 		s.upload(w, r)
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if r.URL.Path == "/api/users" {
+		s.users(w, r)
+		return
+	}
+	if r.URL.Path == "/api/account/password" {
+		s.changeLoginPassword(w, r)
+		return
+	}
+	if r.URL.Path == "/api/shares" || r.URL.Path == "/api/share-recipients" {
+		s.shares(w, r)
+		return
+	}
 	if r.URL.Path != "/api/hosts" {
 		http.NotFound(w, r)
 		return
 	}
-	store, err := config.Load()
-	if err != nil {
-		http.Error(w, err.Error(), 500)
+	session := requestSession(r)
+	if session == nil {
+		http.Error(w, "authentication required", 401)
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if r.Method == http.MethodGet {
+		hosts, err := webstore.ListHosts(session.User.ID)
+		if err != nil {
+			http.Error(w, "无法读取主机列表", 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
-			Hosts []config.SSHHost `json:"hosts"`
-			Token string           `json:"token"`
-		}{store.Hosts, s.token})
+			Hosts []webstore.Host `json:"hosts"`
+			Token string          `json:"token"`
+			User  webstore.User   `json:"user"`
+		}{hosts, session.Token, session.User})
 		return
 	}
-	if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodDelete {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+	if r.Method != "POST" && r.Method != "PUT" && r.Method != "DELETE" {
+		w.WriteHeader(405)
 		return
 	}
 	var input struct {
-		Original string         `json:"original"`
-		Host     config.SSHHost `json:"host"`
-		Password string         `json:"password"`
+		Original   string         `json:"original"`
+		Host       config.SSHHost `json:"host"`
+		Password   string         `json:"password"`
+		PrivateKey string         `json:"private_key"`
+		ShareID    int64          `json:"share_id"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
+	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF {
 		http.Error(w, "invalid request body", 400)
 		return
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		http.Error(w, "invalid request body", 400)
-		return
-	}
-	current := store.Find(input.Original)
-	if r.Method != http.MethodPost && current == nil {
-		http.Error(w, "host not found", 404)
-		return
-	}
-	input.Host.SavePassword = input.Host.AuthType == config.AuthPassword
-	switch r.Method {
-	case http.MethodPost:
-		if input.Host.SavePassword && input.Password == "" {
-			http.Error(w, "host password is required when saving it", 400)
+	var err error
+	if r.Method == "DELETE" {
+		err = webstore.DeleteHost(session.User.ID, input.Original)
+	} else {
+		if input.Host.IdentityFile != "" {
+			http.Error(w, "Web 私钥需粘贴内容，不能使用服务端文件路径。", 400)
 			return
 		}
-		input.Host.LastLogin = 0
-		if err = input.Host.Validate(); err == nil && store.Find(input.Host.Name) != nil {
-			err = fmt.Errorf("host %q already exists", input.Host.Name)
+		if r.Method == "PUT" {
+			input.Host.Name = input.Original
 		}
-		if err == nil && input.Host.SavePassword {
-			err = credential.SetVaultPassword(input.Host.Name, input.Password, nil)
-		}
-		if err != nil {
-			break
-		}
-		err = store.Add(input.Host)
-	case http.MethodPut:
-		// Credentials are keyed by alias; keep the alias stable in this editor.
-		input.Host.Name = current.Name
-		input.Host.LastLogin = current.LastLogin
-		wantSavedPassword := input.Host.AuthType == config.AuthPassword && input.Host.SavePassword
-		if wantSavedPassword && input.Password == "" && !current.SavePassword {
-			http.Error(w, "host password is required when saving it", 400)
-			return
-		}
-		if wantSavedPassword && input.Password != "" {
-			err = credential.SetVaultPassword(current.Name, input.Password, nil)
-		} else if !wantSavedPassword && current.SavePassword {
-			err = credential.DeletePassword(current.Name, nil)
-		}
-		input.Host.SavePassword = wantSavedPassword
-		if err != nil {
-			break
-		}
-		err = store.Update(current.Name, input.Host)
-	case http.MethodDelete:
-		if current.SavePassword {
-			err = credential.DeletePassword(current.Name, func(string) (string, error) {
-				return "", errors.New("use the terminal UI to unlock the password vault and delete this host")
-			})
-			if err != nil {
-				http.Error(w, err.Error(), 400)
-				return
-			}
-		}
-		err = store.Delete(current.Name)
+		err = webstore.SaveHost(session.User.ID, session.Key, input.Host, webstore.Secret{Password: input.Password, PrivateKey: input.PrivateKey}, r.Method == "PUT", input.ShareID)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), 400)
+		status := 400
+		if errors.Is(err, webstore.ErrNotFound) {
+			status = 404
+		}
+		if errors.Is(err, webstore.ErrConflict) {
+			status = 409
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(204)
 }

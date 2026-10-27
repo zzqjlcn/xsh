@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>xsh · Web Terminal</title>
+<title>xsh</title>
 <link rel="icon" type="image/png" href="./favicon.png?v=4">
 <link rel="icon" href="./favicon.ico?v=4" type="image/x-icon">
 <link rel="stylesheet" href="./vendor/xterm.css">
@@ -17,17 +17,19 @@
 </head>
 <body>
 
-<!-- ================= 登录 / 解锁密码本（真实流程，观感对齐原型） ================= -->
+<!-- ================= Web 账号登录 ================= -->
 <dialog id="master-login" aria-labelledby="master-title">
   <div class="login-card">
     <div class="login-logo"><img class="brand-mark brand-mark-login" src="./logo.png?v=4" alt=""></div>
-    <h1 class="login-title" id="master-title">xsh Web</h1>
-    <p class="copy" id="master-copy">输入密码本（encrypted vault）的 master password 以解锁已保存的凭据。</p>
-    <form id="master-form" novalidate>
+    <h1 class="login-title" id="master-title">xsh</h1>
+    <p class="copy" id="master-copy">登录你的 xsh 账号。</p>
+    <form id="master-form">
+      <div class="field"><label for="login-username">用户名</label><input class="input" id="login-username" autocomplete="username" required minlength="3" maxlength="64"></div>
+      <div class="field" id="setup-code-row" hidden><label for="setup-code">初始化码</label><input class="input" id="setup-code" autocomplete="off"><p class="hint">查看 xsh web 的启动终端。</p></div>
       <div class="field">
-        <label for="master-password">Master password</label>
+        <label for="master-password">登录密码</label>
         <div class="password-wrap">
-          <input class="input" id="master-password" type="password" autocomplete="current-password" placeholder="••••••••••••" required>
+          <input class="input" id="master-password" type="password" minlength="8" maxlength="1024" autocomplete="current-password" placeholder="••••••••••••" required>
           <button type="button" class="eye" data-eye="master-password" aria-label="显示/隐藏密码">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
           </button>
@@ -37,12 +39,12 @@
         <label for="master-confirm">再次输入确认</label>
         <input class="input" id="master-confirm" type="password" autocomplete="new-password" placeholder="••••••••••••">
       </div>
+      <div class="field" id="legacy-import-row" hidden><label><input type="checkbox" id="legacy-import" checked> 导入原有主机到管理员账号</label></div>
+      <div class="field" id="legacy-password-row" hidden><label for="legacy-password">原密码本主密码</label><input class="input" id="legacy-password" type="password" autocomplete="off"></div>
       <p class="login-error" id="master-error" role="alert"></p>
-      <button class="btn btn-primary btn-lg" type="submit" id="master-submit">解锁终端</button>
+      <button class="btn btn-primary btn-lg" type="submit" id="master-submit">登录</button>
     </form>
-    <div class="login-foot">
-      <span class="eyebrow">VAULT · AES-256-GCM</span>
-    </div>
+
   </div>
 </dialog>
 
@@ -52,23 +54,28 @@
     <a class="brand" href="./">
       <img class="brand-mark brand-mark-nav" src="./logo.png?v=4" alt="">
       <span class="brand-word">xsh</span>
-      <span class="brand-tag">WEB</span>
-      <span class="brand-divider"></span>
     </a>
 
+    <div class="tabbar">
     <div id="tabstrip" role="tablist" aria-label="SSH 终端会话"></div>
+    <button class="icon-btn" id="btn-new-tab" type="button" title="新建选项卡" aria-label="新建选项卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
 
     <div class="top-actions">
-      <button class="btn btn-subtle" id="btn-upload" type="button" disabled>文件传输</button>
-      <span class="readout">LOCAL · <b>ANSI-256</b> · TRUECOLOR</span>
-      <button class="icon-btn" id="theme-toggle" title="切换深色 / 亮色主题" aria-label="切换主题" aria-pressed="false"></button>
-      <button class="btn btn-primary" id="btn-open-hosts" title="主机列表 (q)" aria-label="主机列表">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 4v5M16 14h.01M16 17h.01"/></svg>
-        主机 <span class="count-chip" id="host-count-chip">0</span>
+      <button class="icon-btn" id="btn-upload" type="button" title="文件传输" aria-label="文件传输" hidden disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v3M3 11h18l-2 10H5l-2-10Z"/><path d="m9 15 3-3 3 3m-3-3v6"/></svg>
       </button>
-      <button class="icon-btn hide-n" id="btn-lock" title="锁定 Web UI（返回登录）" aria-label="锁定">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="9" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      <button class="icon-btn" id="btn-password" type="button" title="修改密码" aria-label="修改密码" hidden disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-4-4 3-3m-6 0 3-3M6.5 6.5h.01"/></svg>
       </button>
+      <button class="icon-btn hosts-toggle" id="btn-open-hosts" type="button" title="主机列表 (q)" aria-label="主机列表" aria-expanded="false" aria-controls="host-drawer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/></svg>
+        <span class="hosts-count" id="host-count-chip" aria-hidden="true" hidden>0</span>
+      </button>
+      <button class="icon-btn" id="btn-shares" type="button" title="分享收件箱" aria-label="分享收件箱"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4zM4 13h5l2 3h2l2-3h5"/></svg></button>
+      <button class="icon-btn" id="btn-settings" type="button" title="设置" aria-label="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 3 1-1h4l1 3 3 2 3-.5 2 3-2 2v3l2 2-2 3-3-.5-3 2-1 3h-4l-1-3-3-2-3 .5-2-3 2-2v-3l-2-2 2-3L6 7l3-2Z" transform="translate(0 -1) scale(.95)"/><circle cx="12" cy="12" r="3.5"/></svg></button>
+      <button class="icon-btn" id="btn-screen-lock" type="button" title="锁屏" aria-label="锁屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></button>
+      <button class="icon-btn" id="btn-logout" type="button" title="退出登录" aria-label="退出登录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4m6-12 5 4-5 4m-6-4h11"/></svg></button>
     </div>
   </header>
 
@@ -94,8 +101,31 @@
     <div id="pane-area"></div>
   </div>
 </div>
+<div id="tab-context-menu" class="tab-context-menu" role="menu" aria-label="选项卡操作" hidden>
+  <button type="button" role="menuitem" data-tab-action="new">新建</button>
+  <button type="button" role="menuitem" data-tab-action="duplicate">复制</button>
+  <div role="separator"></div>
+  <button type="button" role="menuitem" data-tab-action="close">关闭</button>
+  <button type="button" role="menuitem" data-tab-action="close-others">关闭其他</button>
+  <button type="button" role="menuitem" data-tab-action="close-all">关闭所有</button>
+  <div role="separator"></div>
+  <button type="button" role="menuitem" data-tab-action="vertical">垂直分割</button>
+  <button type="button" role="menuitem" data-tab-action="horizontal">水平分割</button>
+</div>
 
 <!-- ================= 主机抽屉 ================= -->
+<div id="terminal-context-menu" class="tab-context-menu" role="menu" aria-label="终端操作" hidden>
+  <button type="button" role="menuitem" data-terminal-action="copy">复制</button>
+  <button type="button" role="menuitem" data-terminal-action="paste">粘贴</button>
+  <button type="button" role="menuitem" data-terminal-action="select-all">全选</button>
+  <button type="button" role="menuitem" data-terminal-action="clear">清屏</button>
+  <div role="separator"></div>
+  <button type="button" role="menuitem" data-terminal-action="vertical">垂直分割</button>
+  <button type="button" role="menuitem" data-terminal-action="horizontal">水平分割</button>
+  <div role="separator"></div>
+  <button type="button" role="menuitem" data-terminal-action="close">关闭当前终端</button>
+  <p id="terminal-menu-message" class="terminal-menu-message" role="status" hidden></p>
+</div>
 <div class="backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="host-drawer" aria-hidden="true" aria-label="主机列表">
   <div class="drawer-head">
@@ -127,7 +157,6 @@
       <span><span class="kbd">a</span> 新增</span>
       <span><span class="kbd">q</span> 关闭</span>
     </div>
-    <span class="eyebrow">SSH · SFTP READY</span>
   </div>
 </aside>
 
@@ -171,23 +200,29 @@
             </div>
           </div>
           <div class="field wide" id="row-key" hidden>
-            <label for="f-key">私钥路径</label>
-            <input class="input" id="f-key" name="identity_file" placeholder="~/.ssh/id_ed25519" autocomplete="off">
-            <p class="hint">密钥保存在本机；<code>known_hosts</code> 指纹校验仍然生效。</p>
+            <label for="f-key">私钥内容</label>
+            <textarea class="input private-key-input" id="f-key" name="private_key" rows="5" placeholder="粘贴私钥内容" autocomplete="off" spellcheck="false"></textarea>
+            <p class="hint">私钥在当前账号下加密保存。编辑时留空可保留已有私钥。</p>
           </div>
           <div class="field wide password-save" id="row-passhint" hidden>
             <label for="f-password">主机密码</label>
-            <div class="password-wrap">
+            <div class="password-wrap host-password-wrap">
               <input class="input" id="f-password" name="password" type="password" autocomplete="new-password" placeholder="输入要保存的主机密码" disabled>
+              <button type="button" class="password-action host-password-test" id="btn-test-password" title="测试密码连接" aria-label="测试密码连接"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v4m6-4v4M5 7h10v3a5 5 0 0 1-10 0V7Zm5 8v5m5-2 2 2 4-4"/></svg></button>
               <button type="button" class="eye" data-eye="f-password" aria-label="显示/隐藏密码">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
               </button>
             </div>
-            <p class="hint">使用已登录的 master password 加密保存，不会写入 hosts 配置。</p>
+            <p class="hint">密码在当前账号下加密保存。</p>
+            <p class="hint" id="host-test-result" role="status" hidden></p>
           </div>
           <div class="field">
-            <label for="f-jump">跳板主机</label>
-            <select class="select" id="f-jump" name="proxy_jump"><option value="">不使用跳板</option></select>
+            <label id="jump-label" for="f-jump-toggle">跳板主机</label>
+            <input id="f-jump" name="proxy_jump" type="hidden" value="">
+            <div id="jump-picker" class="jump-picker">
+              <button class="input share-picker-toggle" id="f-jump-toggle" type="button" aria-labelledby="jump-label jump-value" aria-haspopup="listbox" aria-expanded="false" aria-controls="jump-options"><span id="jump-value">不使用跳板</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+              <div id="jump-panel" class="share-picker-panel" hidden><input class="input" id="jump-search" type="search" placeholder="搜索主机" aria-label="搜索跳板主机" autocomplete="off"><div id="jump-options" class="jump-options" role="listbox" aria-labelledby="jump-label"></div></div>
+            </div>
           </div>
           <div class="field">
             <label for="f-tags">标签</label>
@@ -201,6 +236,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-.7 12a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9L6 7M10 11v6M14 11v6"/></svg>
           删除
         </button>
+        <button class="icon-btn" type="button" id="btn-share-host" title="分享配置" aria-label="分享配置" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m9 10 6-4M9 14l6 4"/></svg></button>
         <span class="spacer"></span>
         <button class="btn btn-subtle" type="button" data-close="dlg-host">取消</button>
         <button class="btn btn-primary" type="submit">保存</button>
@@ -214,7 +250,6 @@
   <div class="dlg dlg-sm">
     <div class="dlg-head">
       <div>
-        <p class="eyebrow">SSH LOGIN</p>
         <h2>连接终端</h2>
       </div>
       <button class="icon-btn" data-close="dlg-connect" aria-label="关闭">
@@ -226,20 +261,28 @@
         <div class="target-chip">
           <span class="av" id="cc-av"></span>
           <span class="meta">
-            <span class="nm" id="cc-name"></span>
+            <span class="connect-host-name">
+              <span class="nm" id="cc-name"></span>
+              <span class="host-saved-password connect-password-status" id="cc-password-status" role="img" hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-4-4 3-3m-6 0 3-3"/><path id="cc-password-unsaved" d="M3 21 21 3"/></svg>
+              </span>
+            </span>
             <span class="ad" id="cc-addr"></span>
           </span>
           <span class="tag tag-meta" id="cc-auth"></span>
         </div>
         <div class="field">
-          <label for="cc-pass">主机密码 <span class="hint">（已保存可留空）</span></label>
+          <label for="cc-user">用户名</label>
+          <input class="input" id="cc-user" autocomplete="username" required maxlength="256" placeholder="SSH 用户名">
+        </div>
+        <div class="field">
+          <label for="cc-pass">主机密码</label>
           <div class="password-wrap">
-            <input class="input" id="cc-pass" type="password" autocomplete="current-password" placeholder="临时密码，仅用于本次连接">
+            <input class="input" id="cc-pass" type="password" autocomplete="current-password" placeholder="输入密码">
             <button type="button" class="eye" data-eye="cc-pass" aria-label="显示/隐藏密码">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
             </button>
           </div>
-          <p class="hint">密码本已解锁，私钥 / 已保存密码会自动使用；未保存的临时密码不会被记住。</p>
         </div>
         <p class="form-msg" id="connect-msg"></p>
       </div>
@@ -295,4 +338,95 @@
   <div class="fm-transfer"><progress id="files-progress" max="100" value="0" hidden aria-label="传输进度"></progress><div><span id="files-status" role="status" aria-live="polite">双击目录打开；选择文件或拖拽文件到列表即可上传。</span><button id="files-cancel" class="btn btn-subtle" hidden>取消传输</button></div></div>
   <input id="upload-file-picker" type="file" multiple hidden>
 </dialog>
+<dialog id="dlg-password" aria-labelledby="password-title">
+  <div class="dlg dlg-sm">
+    <div class="dlg-head"><div><p class="eyebrow">REMOTE PASSWORD</p><h2 id="password-title">修改远程用户密码</h2></div><button class="icon-btn" data-close="dlg-password" type="button" aria-label="关闭">×</button></div>
+    <form id="password-form">
+      <div class="dlg-body">
+        <p id="password-target" class="hint"></p>
+        <p class="hint">修改远程当前登录用户的系统密码。已保存的主机密码会同步更新；当前终端保持连接。适用于提供标准 passwd 命令的 Linux 主机。</p>
+        <div class="field">
+          <label for="password-current">当前用户密码</label>
+          <div class="password-wrap password-wrap-current">
+            <input class="input" id="password-current" type="password" autocomplete="current-password" maxlength="1024" placeholder="留空使用该主机已保存的密码">
+            <div class="password-inline-actions">
+              <button class="password-action" id="password-current-toggle" type="button" aria-label="显示当前密码" title="显示当前密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+              <button class="password-action" id="password-current-copy" type="button" aria-label="复制当前密码" title="复制当前密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button>
+            </div>
+          </div>
+          <p class="hint">留空自动使用该主机已保存的密码；未保存密码的私钥登录需手动填写。root 通常可留空。</p>
+        </div>
+        <div class="field">
+          <label for="password-new">新密码</label>
+          <div class="password-wrap password-wrap-new">
+            <input class="input" id="password-new" type="password" autocomplete="new-password" required minlength="8" maxlength="1024">
+            <div class="password-inline-actions">
+              <button class="password-action" type="button" data-eye="password-new" aria-label="显示/隐藏新密码" title="显示/隐藏新密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+              <button class="password-action" type="button" data-generate="password-new" aria-label="生成随机密码" title="生成20位随机密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 12-12 4 4L8 24M14 10l4 4" transform="translate(0 -3)"/><path d="M5 3v4M3 5h4M18 2v4M16 4h4M20 17v4M18 19h4"/></svg></button>
+              <button class="password-action" type="button" data-copy="password-new" aria-label="复制新密码" title="复制新密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field"><label for="password-confirm">再次输入新密码</label><input class="input" id="password-confirm" type="password" autocomplete="new-password" required minlength="8" maxlength="1024"></div>
+        <p id="password-msg" class="form-msg" role="status" aria-live="polite"></p>
+      </div>
+      <div class="dlg-foot"><span class="spacer"></span><button class="btn btn-subtle" type="button" data-close="dlg-password">取消</button><button class="btn btn-primary" id="password-submit" type="submit">修改远程密码</button></div>
+    </form>
+  </div>
+</dialog>
+<dialog id="dlg-share" aria-labelledby="share-title"><div class="dlg dlg-sm">
+  <div class="dlg-head"><h2 id="share-title">分享配置</h2><button class="icon-btn" data-close="dlg-share" type="button" aria-label="关闭">×</button></div>
+  <form id="share-form"><div class="dlg-body"><p class="hint" id="share-target"></p><p class="hint">只分享名称、地址、端口和标签。接收者需填写自己的用户名和凭据。</p>
+    <div class="field"><label id="share-recipient-label">接收账号</label><div id="share-picker" class="share-picker">
+      <button class="input share-picker-toggle" id="share-recipient-toggle" type="button" aria-labelledby="share-recipient-label share-recipient-summary" aria-expanded="false" aria-controls="share-recipient-panel"><span id="share-recipient-summary">请选择接收账号</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+      <div id="share-recipient-panel" class="share-picker-panel" hidden><input class="input" id="share-recipient-search" type="search" placeholder="搜索账号" aria-label="搜索接收账号" autocomplete="off"><div id="share-recipient-options" class="share-picker-options" role="group" aria-labelledby="share-recipient-label"></div></div>
+    </div></div><p class="form-msg" id="share-msg" role="status"></p></div><div class="dlg-foot share-footer"><button class="btn btn-subtle" type="button" data-close="dlg-share">取消</button><button class="btn btn-primary" id="share-submit" type="submit" disabled>分享</button></div></form>
+</div></dialog>
+<dialog id="dlg-inbox" aria-labelledby="inbox-title"><div class="dlg dlg-sm"><div class="dlg-head"><h2 id="inbox-title">分享收件箱</h2><button class="icon-btn" data-close="dlg-inbox" type="button" aria-label="关闭">×</button></div><div class="dlg-body"><div id="inbox-list"></div><p class="form-msg" id="inbox-msg" role="status"></p></div></div></dialog>
+<dialog id="dlg-settings" aria-labelledby="settings-title">
+  <div class="settings-shell">
+    <aside class="settings-sidebar">
+      <h2 id="settings-title">设置</h2>
+      <nav class="settings-nav" aria-label="设置分类">
+        <button class="settings-nav-item active" type="button" data-settings-tab="account" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>我的账号</button>
+        <button class="settings-nav-item" type="button" id="settings-nav-users" data-settings-tab="users" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 5"/></svg>用户管理</button>
+        <button class="settings-nav-item" type="button" data-settings-tab="appearance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></svg>外观</button>
+      </nav>
+      <div class="settings-identity"><span class="settings-avatar" id="settings-avatar"></span><span><strong id="account-name"></strong><small id="account-role"></small></span></div>
+    </aside>
+    <div class="settings-main">
+      <button class="icon-btn settings-close" type="button" data-close="dlg-settings" aria-label="关闭设置" title="关闭">×</button>
+      <section class="settings-panel" data-settings-panel="account">
+        <header class="settings-heading"><div><h2>我的账号</h2><p>管理登录密码与账号安全</p></div></header>
+        <div class="settings-account-summary"><span class="settings-profile-avatar" id="account-profile-avatar"></span><div><strong id="account-profile-name"></strong><span id="account-profile-role"></span></div><span class="settings-status"><i></i>已登录</span></div>
+        <form id="account-password-form" class="account-form settings-password-form"><h3>修改登录密码</h3><div class="field"><label for="account-current">当前密码</label><input class="input" id="account-current" type="password" autocomplete="current-password" required></div><div class="field"><label for="account-new">新密码</label><input class="input" id="account-new" type="password" autocomplete="new-password" required minlength="8" maxlength="1024"></div><div class="field"><label for="account-confirm">确认新密码</label><input class="input" id="account-confirm" type="password" autocomplete="new-password" required minlength="8" maxlength="1024"></div><div class="settings-form-footer"><span>修改后需要重新登录</span><button class="btn btn-primary" type="submit">保存密码</button></div></form>
+      </section>
+      <section class="settings-panel" data-settings-panel="users" id="account-admin" hidden>
+        <header class="settings-heading"><div><h2>用户管理 <span id="users-count" class="settings-count">0</span></h2><p>管理账号与访问状态</p></div><button class="btn btn-primary" type="button" id="btn-create-user"><span aria-hidden="true">＋</span> 新建用户</button></header>
+        <div class="users-toolbar"><input class="input" id="users-search" type="search" placeholder="搜索用户名" aria-label="搜索用户" autocomplete="off"><select class="select" id="users-filter" aria-label="用户状态"><option value="all">全部状态</option><option value="active">已启用</option><option value="disabled">已停用</option></select></div>
+        <div class="users-table-wrap"><table class="users-table"><thead><tr><th>用户</th><th>角色</th><th>状态</th><th class="user-actions-heading">操作</th></tr></thead><tbody id="account-users"></tbody></table></div>
+        <p class="settings-table-note" id="users-summary"></p>
+      </section>
+      <section class="settings-panel" data-settings-panel="appearance" hidden>
+        <header class="settings-heading"><div><h2>外观</h2><p>选择工作区的显示主题</p></div></header>
+        <div class="theme-options" role="group" aria-label="显示主题">
+          <button class="theme-option" type="button" data-theme-choice="dark" aria-pressed="false"><span class="theme-preview theme-preview-dark"><span class="theme-mini-sidebar"></span><span class="theme-mini-body"><i></i><i></i><i></i></span></span><span class="theme-choice-label">深色<span class="theme-choice-check" aria-hidden="true">✓</span></span></button>
+          <button class="theme-option" type="button" data-theme-choice="light" aria-pressed="false"><span class="theme-preview theme-preview-light"><span class="theme-mini-sidebar"></span><span class="theme-mini-body"><i></i><i></i><i></i></span></span><span class="theme-choice-label">浅色<span class="theme-choice-check" aria-hidden="true">✓</span></span></button>
+        </div>
+      </section>
+      <p class="form-msg settings-message" id="account-msg" role="status"></p>
+    </div>
+  </div>
+</dialog>
+<dialog id="dlg-create-user" aria-labelledby="create-user-title"><div class="dlg dlg-sm">
+  <div class="dlg-head"><div><h2 id="create-user-title">新建用户</h2><p class="hint">创建一个独立的 Web 账号</p></div><button class="icon-btn" data-close="dlg-create-user" type="button" aria-label="关闭新建用户">×</button></div>
+  <form id="user-create-form"><div class="dlg-body"><div class="field"><label for="user-create-name">用户名</label><input class="input" id="user-create-name" required minlength="3" maxlength="64" autocomplete="off" placeholder="例如 alice"></div><div class="field"><label for="user-create-password">初始密码</label><div class="password-wrap"><input class="input" id="user-create-password" type="password" autocomplete="new-password" required minlength="8" maxlength="1024" placeholder="至少 8 个字符"><button class="eye" type="button" data-eye="user-create-password" aria-label="显示/隐藏初始密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></div></div><p class="form-msg" id="user-create-msg" role="status"></p></div><div class="dlg-foot"><span class="spacer"></span><button class="btn btn-subtle" type="button" data-close="dlg-create-user">取消</button><button class="btn btn-primary" type="submit">创建用户</button></div></form>
+</div></dialog>
+<dialog id="screen-lock" aria-labelledby="screen-lock-title"><div class="screen-lock-content">
+  <div class="screen-lock-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></div>
+  <h1 id="screen-lock-title">屏幕已锁定</h1><p id="screen-lock-user"></p><p class="screen-lock-connections" id="screen-lock-connections"></p>
+  <form id="screen-unlock-form"><label class="sr-only" for="screen-unlock-password">登录密码</label><input class="input" id="screen-unlock-password" type="password" autocomplete="current-password" required placeholder="输入登录密码解锁"><p class="form-msg" id="screen-lock-error" role="alert"></p><button class="btn btn-primary" type="submit">解锁</button></form>
+  <button class="screen-lock-logout" id="screen-lock-logout" type="button">退出登录</button>
+</div></dialog>
 </body></html>

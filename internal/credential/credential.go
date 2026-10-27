@@ -17,20 +17,26 @@ func SetPassword(alias, password string) error {
 }
 
 func GetPassword(alias string, prompt PasswordPrompt) (string, error) {
+	if VaultExists() {
+		password, found, err := getVaultPassword(alias, prompt)
+		if err == nil && found {
+			return password, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
 	password, err := keyring.Get(serviceName, alias)
 	keyringNotFound := errors.Is(err, keyring.ErrNotFound)
 	keyringError := normalizeError(err)
 	if err == nil && password != "" {
+		// Migrate legacy OS credentials when a vault is available and unlocked.
+		if VaultExists() {
+			if err := SetVaultPassword(alias, password, prompt); err != nil {
+				return "", err
+			}
+		}
 		return password, nil
-	}
-	if VaultExists() {
-		password, found, vaultErr := getVaultPassword(alias, prompt)
-		if vaultErr != nil {
-			return "", vaultErr
-		}
-		if found {
-			return password, nil
-		}
 	}
 	if keyringNotFound {
 		return "", nil
@@ -40,9 +46,6 @@ func GetPassword(alias string, prompt PasswordPrompt) (string, error) {
 
 func DeletePassword(alias string, prompt PasswordPrompt) error {
 	keyringErr := keyring.Delete(serviceName, alias)
-	if keyringErr == nil {
-		return nil
-	}
 	if errors.Is(keyringErr, keyring.ErrNotFound) {
 		keyringErr = nil
 	} else {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zzqjlcn/xsh/internal/webstore"
 	"github.com/zzqjlcn/xsh/internal/webui"
 )
 
@@ -35,6 +36,17 @@ func runWebCommand(arguments []string, output io.Writer) error {
 	root, err := webui.NormalizeRootPath(*rootPath)
 	if err != nil {
 		return err
+	}
+	hasUsers, err := webstore.HasUsers()
+	if err != nil {
+		return err
+	}
+	if !hasUsers {
+		code, err := webstore.SetupCode()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(output, "Web administrator setup code: %s\n", code)
 	}
 	handler, err := webui.NewForHostAndRootPath(*host, root)
 	if err != nil {

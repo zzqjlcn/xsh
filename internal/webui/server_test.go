@@ -7,78 +7,69 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zzqjlcn/xsh/internal/config"
-	"github.com/zzqjlcn/xsh/internal/credential"
+	"github.com/zzqjlcn/xsh/internal/webstore"
 )
 
 func TestHostLifecycle(t *testing.T) {
 	const alias = "xsh-webui-host-lifecycle-test"
 	t.Setenv("XSH_CONFIG_HOME", t.TempDir())
 	createTestVault(t, "test-password")
+	user, key, err := webstore.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	loginRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/login", strings.NewReader(`{"password":"test-password"}`))
-	loginResponse := httptest.NewRecorder()
-	handler.ServeHTTP(loginResponse, loginRequest)
-	if loginResponse.Code != http.StatusOK {
-		t.Fatalf("login: %d %s", loginResponse.Code, loginResponse.Body.String())
+	login := httptest.NewRecorder()
+	handler.ServeHTTP(login, httptest.NewRequest("POST", "http://127.0.0.1/api/login", strings.NewReader(`{"username":"admin","password":"test-password"}`)))
+	if login.Code != 200 {
+		t.Fatal(login.Body.String())
 	}
-	cookie := loginResponse.Result().Cookies()[0]
+	var auth struct{ Token string }
+	json.Unmarshal(login.Body.Bytes(), &auth)
 	request := func(method, body, token string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, "http://127.0.0.1:8080/api/hosts", strings.NewReader(body))
+		r := httptest.NewRequest(method, "http://127.0.0.1/api/hosts", strings.NewReader(body))
+		r.AddCookie(login.Result().Cookies()[0])
 		r.Header.Set("X-XSH-Token", token)
-		r.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	w := loginResponse
-	var initial struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &initial); err != nil {
-		t.Fatal(err)
-	}
-	body := `{"host":{"name":"` + alias + `","hostname":"127.0.0.1","user":"tester","port":22,"auth_type":"password","save_password":true,"last_login":123},"password":"saved-password"}`
+	body := `{"host":{"name":"` + alias + `","hostname":"127.0.0.1","user":"tester","port":22,"auth_type":"password","last_login":123},"password":"saved-password"}`
 	if w := request("POST", body, ""); w.Code != 403 {
 		t.Fatalf("missing token: %d", w.Code)
 	}
-	if w := request("POST", body, initial.Token); w.Code != 204 {
+	if w := request("POST", body, auth.Token); w.Code != 204 {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
-	store, _ := config.Load()
-	if host := store.Find(alias); host == nil || !host.SavePassword || host.LastLogin != 0 {
-		t.Fatalf("invalid created host: %+v", host)
+	host, err := webstore.FindHost(user.ID, alias)
+	if err != nil || !host.SavePassword || host.LastLogin != 0 {
+		t.Fatalf("host: %+v %v", host, err)
 	}
-	if password, err := credential.GetPassword(alias, nil); err != nil || password != "saved-password" {
-		t.Fatalf("saved password = %q, err=%v", password, err)
+	secret, err := webstore.ReadSecret(user.ID, key, alias)
+	if err != nil || secret.Password != "saved-password" {
+		t.Fatal("saved password mismatch")
 	}
-	if w := request("POST", body, initial.Token); w.Code != 400 {
+	if w := request("POST", body, auth.Token); w.Code != 409 {
 		t.Fatalf("duplicate: %d", w.Code)
 	}
-	store.Hosts[0].LastLogin = 456
-	if err := store.Save(); err != nil {
-		t.Fatal(err)
-	}
-	update := `{"original":"` + alias + `","host":{"name":"renamed","hostname":"example.test","user":"tester","port":2222,"auth_type":"password","save_password":true}}`
-	if w := request("PUT", update, initial.Token); w.Code != 204 {
+	update := `{"original":"` + alias + `","host":{"name":"renamed","hostname":"example.test","user":"tester","port":2222,"auth_type":"password"}}`
+	if w := request("PUT", update, auth.Token); w.Code != 204 {
 		t.Fatalf("update: %d %s", w.Code, w.Body.String())
 	}
-	store, _ = config.Load()
-	host := store.Find(alias)
-	if host == nil || host.Hostname != "example.test" || !host.SavePassword || host.LastLogin != 456 {
-		t.Fatalf("invalid updated host: %+v", host)
+	host, err = webstore.FindHost(user.ID, alias)
+	if err != nil || host.Hostname != "example.test" || !host.SavePassword {
+		t.Fatal("update lost profile")
 	}
-	if w := request("DELETE", `{"original":"`+alias+`"}`, initial.Token); w.Code != 204 {
-		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	if w := request("DELETE", `{"original":"`+alias+`"}`, auth.Token); w.Code != 204 {
+		t.Fatalf("delete: %d", w.Code)
 	}
-	store, _ = config.Load()
-	if len(store.Hosts) != 0 {
-		t.Fatal("host was not deleted")
+	if _, err := webstore.FindHost(user.ID, alias); err != webstore.ErrNotFound {
+		t.Fatal("host not deleted")
 	}
-	if w := request("PUT", update, initial.Token); w.Code != 404 {
+	if w := request("PUT", update, auth.Token); w.Code != 404 {
 		t.Fatalf("missing host: %d", w.Code)
 	}
 }
@@ -169,7 +160,7 @@ func TestMasterPasswordLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	login := func(password string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/login", strings.NewReader(`{"password":"`+password+`"}`))
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/login", strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
@@ -183,50 +174,50 @@ func TestMasterPasswordLogin(t *testing.T) {
 	}
 }
 
-func TestFirstLoginCreatesPasswordVault(t *testing.T) {
+func TestFirstLoginCreatesAdministrator(t *testing.T) {
 	t.Setenv("XSH_CONFIG_HOME", t.TempDir())
-	credential.LockVault()
-	t.Cleanup(credential.LockVault)
 	handler, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	statusRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/auth/status", nil)
-	statusResponse := httptest.NewRecorder()
-	handler.ServeHTTP(statusResponse, statusRequest)
-	var status struct {
-		SetupRequired bool `json:"setup_required"`
+	status := httptest.NewRecorder()
+	handler.ServeHTTP(status, httptest.NewRequest("GET", "http://127.0.0.1/api/auth/status", nil))
+	if !strings.Contains(status.Body.String(), `"setup_required":true`) {
+		t.Fatal(status.Body.String())
 	}
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil || !status.SetupRequired {
-		t.Fatalf("status = %+v, err=%v", status, err)
+	code, err := webstore.SetupCode()
+	if err != nil {
+		t.Fatal(err)
 	}
-	login := func(create bool) *httptest.ResponseRecorder {
-		body := `{"password":"new-password","create":` + map[bool]string{true: "true", false: "false"}[create] + `}`
-		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/login", strings.NewReader(body))
+	login := func(create bool, code string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"username": "admin", "password": "new-password", "create": create, "setup_code": code})
 		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, r)
+		handler.ServeHTTP(w, httptest.NewRequest("POST", "http://127.0.0.1/api/login", strings.NewReader(string(body))))
 		return w
 	}
-	if w := login(false); w.Code != http.StatusConflict {
-		t.Fatalf("setup without create: %d", w.Code)
+	if w := login(false, code); w.Code != 409 {
+		t.Fatalf("setup: %d", w.Code)
 	}
-	if w := login(true); w.Code != http.StatusOK {
-		t.Fatalf("create vault: %d %s", w.Code, w.Body.String())
+	if w := login(true, "wrong"); w.Code != 403 {
+		t.Fatalf("wrong setup code: %d", w.Code)
 	}
-	credential.LockVault()
-	if err := credential.UnlockVault("new-password"); err != nil {
-		t.Fatalf("created vault cannot be unlocked: %v", err)
+	if w := login(true, code); w.Code != 200 {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	user, _, err := webstore.Authenticate("admin", "new-password")
+	if err != nil || !user.Admin {
+		t.Fatal("administrator not created")
+	}
+	if w := login(true, code); w.Code != 409 {
+		t.Fatal("second bootstrap allowed")
 	}
 }
 
 func createTestVault(t *testing.T, password string) {
 	t.Helper()
-	credential.LockVault()
-	t.Cleanup(credential.LockVault)
-	if err := credential.SetVaultPassword("test-host", "saved-password", func(string) (string, error) { return password, nil }); err != nil {
+	if _, _, err := webstore.CreateUser("admin", password, true, nil); err != nil {
 		t.Fatal(err)
 	}
-	credential.LockVault()
 }
 
 func TestTerminalBoundaries(t *testing.T) {

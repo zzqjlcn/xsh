@@ -84,7 +84,7 @@ func TestMountedSessionCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest("POST", "http://127.0.0.1:8080/xsh/api/login", strings.NewReader(`{"password":"test-password"}`)))
+	handler.ServeHTTP(w, httptest.NewRequest("POST", "http://127.0.0.1:8080/xsh/api/login", strings.NewReader(`{"username":"admin","password":"test-password"}`)))
 	if w.Code != 200 {
 		t.Fatalf("login: %d %s", w.Code, w.Body.String())
 	}

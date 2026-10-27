@@ -36,7 +36,17 @@ func Dial(host config.SSHHost, password string, resolve HostResolver, resolvePas
 }
 
 func DialWithHostKeyCallback(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver, callback ssh.HostKeyCallback) (*Connection, error) {
-	client, jump, err := dial(host, password, resolve, resolvePassword, callback)
+	client, jump, err := dial(host, password, resolve, resolvePassword, callback, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &Connection{Client: client, jump: jump}, nil
+}
+
+// DialWithPrivateKeys resolves account-owned private keys in memory. It never
+// reads IdentityFile paths, while existing CLI dialing keeps its original path.
+func DialWithPrivateKeys(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver, callback ssh.HostKeyCallback, keys func(string) ([]byte, error)) (*Connection, error) {
+	client, jump, err := dial(host, password, resolve, resolvePassword, callback, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -104,8 +114,8 @@ func Connect(host config.SSHHost, password string, resolve HostResolver, resolve
 	return err
 }
 
-func dial(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver, callback ssh.HostKeyCallback) (*ssh.Client, *ssh.Client, error) {
-	cfg, err := clientConfig(host, password, callback)
+func dial(host config.SSHHost, password string, resolve HostResolver, resolvePassword PasswordResolver, callback ssh.HostKeyCallback, keys func(string) ([]byte, error)) (*ssh.Client, *ssh.Client, error) {
+	cfg, err := clientConfigWithKeys(host, password, callback, keys)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,7 +133,7 @@ func dial(host config.SSHHost, password string, resolve HostResolver, resolvePas
 	if err != nil {
 		return nil, nil, err
 	}
-	jumpCfg, err := clientConfig(*jumpHost, jumpPassword, callback)
+	jumpCfg, err := clientConfigWithKeys(*jumpHost, jumpPassword, callback, keys)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ProxyJump %s: %w", jumpHost.Name, err)
 	}
@@ -147,7 +157,30 @@ func dial(host config.SSHHost, password string, resolve HostResolver, resolvePas
 }
 
 func clientConfig(host config.SSHHost, password string, callback ssh.HostKeyCallback) (*ssh.ClientConfig, error) {
-	auth, err := authMethods(host, password)
+	return clientConfigWithKeys(host, password, callback, nil)
+}
+
+func clientConfigWithKeys(host config.SSHHost, password string, callback ssh.HostKeyCallback, keys func(string) ([]byte, error)) (*ssh.ClientConfig, error) {
+	var auth []ssh.AuthMethod
+	var err error
+	if keys == nil {
+		auth, err = authMethods(host, password)
+	} else {
+		if host.AuthType != config.AuthPrivateKey && password != "" {
+			auth = append(auth, ssh.Password(password))
+		}
+		if host.AuthType != config.AuthPassword {
+			var data []byte
+			data, err = keys(host.Name)
+			if err == nil && len(data) > 0 {
+				var signer ssh.Signer
+				signer, err = ssh.ParsePrivateKey(data)
+				if err == nil {
+					auth = append(auth, ssh.PublicKeys(signer))
+				}
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

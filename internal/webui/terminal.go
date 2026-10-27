@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,13 +22,14 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/zzqjlcn/xsh/internal/config"
-	"github.com/zzqjlcn/xsh/internal/credential"
 	"github.com/zzqjlcn/xsh/internal/sshclient"
+	"github.com/zzqjlcn/xsh/internal/webstore"
 )
 
 type terminalMessage struct {
 	Type        string `json:"type"`
 	Host        string `json:"host,omitempty"`
+	User        string `json:"user,omitempty"`
 	Password    string `json:"password,omitempty"`
 	Data        string `json:"data,omitempty"`
 	Message     string `json:"message,omitempty"`
@@ -56,7 +60,8 @@ func (w *socketWriter) Write(data []byte) (int, error) {
 }
 
 func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
-	if subtleToken(r.URL.Query().Get("token"), s.token) == false {
+	actor := requestSession(r)
+	if actor == nil || !subtleToken(r.URL.Query().Get("token"), actor.Token) {
 		http.Error(w, "invalid request token", http.StatusForbidden)
 		return
 	}
@@ -68,6 +73,8 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	stopSession := context.AfterFunc(actor.Context, func() { _ = conn.Close() })
+	defer stopSession()
 	conn.SetReadLimit(1 << 20)
 	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	var start terminalMessage
@@ -77,53 +84,69 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	writer := &socketWriter{conn: conn}
-	store, err := config.Load()
+	hosts, err := webstore.ListHosts(actor.User.ID)
 	if err != nil {
 		writer.send(terminalMessage{Type: "error", Message: err.Error()})
 		return
 	}
-	host := store.Find(start.Host)
-	if host == nil {
+	resolve := func(name string) (*config.SSHHost, bool) {
+		for _, item := range hosts {
+			if strings.EqualFold(item.Name, name) {
+				copy := item.SSHHost
+				return &copy, true
+			}
+		}
+		return nil, false
+	}
+	host, ok := resolve(start.Host)
+	if !ok {
 		writer.send(terminalMessage{Type: "error", Message: "host not found"})
 		return
 	}
 	password := start.Password
+	if err := applyTerminalUser(host, start.User, password); err != nil {
+		writer.send(terminalMessage{Type: "error", Message: err.Error()})
+		return
+	}
 	if password == "" && host.SavePassword {
-		password, err = credential.GetPassword(host.Name, nil)
-		if err != nil {
-			writer.send(terminalMessage{Type: "error", Message: err.Error()})
+		secret, readErr := webstore.ReadSecret(actor.User.ID, actor.Key, host.Name)
+		if readErr != nil {
+			writer.send(terminalMessage{Type: "error", Message: "无法读取主机凭据"})
 			return
 		}
-	}
-	resolver := func(name string) (*config.SSHHost, bool) {
-		found := store.Find(name)
-		if found == nil {
-			return nil, false
-		}
-		copy := *found
-		return &copy, true
+		password = secret.Password
 	}
 	passwordResolver := func(name string) (string, error) {
-		jump, ok := resolver(name)
+		host, ok := resolve(name)
 		if !ok {
-			return "", fmt.Errorf("host %q not found", name)
+			return "", webstore.ErrNotFound
 		}
-		if jump.SavePassword {
-			return credential.GetPassword(name, nil)
+		if !host.SavePassword {
+			return "", nil
 		}
-		return "", fmt.Errorf("jump host %q needs a saved password or private key", name)
+		secret, err := webstore.ReadSecret(actor.User.ID, actor.Key, name)
+		return secret.Password, err
 	}
-	callback, err := browserHostKeyCallback(conn, writer)
+	keys := func(name string) ([]byte, error) {
+		secret, err := webstore.ReadSecret(actor.User.ID, actor.Key, name)
+		return []byte(secret.PrivateKey), err
+	}
+	callback, err := browserHostKeyCallback(conn, writer, actor.User.ID)
 	if err != nil {
 		writer.send(terminalMessage{Type: "error", Message: err.Error()})
 		return
 	}
-	connection, err := sshclient.DialWithHostKeyCallback(*host, password, resolver, passwordResolver, callback)
+	connection, err := sshclient.DialWithPrivateKeys(*host, password, resolve, passwordResolver, callback, keys)
 	if err != nil {
 		writer.send(terminalMessage{Type: "error", Message: err.Error()})
 		return
 	}
 	defer connection.Close()
+	stopConnection := context.AfterFunc(actor.Context, func() { _ = connection.Close() })
+	defer stopConnection()
+	if actor.Context.Err() != nil {
+		return
+	}
 	session, err := connection.Client.NewSession()
 	if err != nil {
 		writer.send(terminalMessage{Type: "error", Message: err.Error()})
@@ -148,16 +171,18 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		writer.send(terminalMessage{Type: "error", Message: err.Error()})
 		return
 	}
-	_ = store.RecordLogin(host.Name)
+	_ = webstore.RecordLogin(actor.User.ID, host.Name)
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		writer.send(terminalMessage{Type: "error", Message: err.Error()})
 		return
 	}
 	connectionID := hex.EncodeToString(secret[:])
-	s.uploads.Store(connectionID, connection.Client)
+	s.uploads.Store(connectionID, &webConnection{UserID: actor.User.ID, SessionID: actor.ID, Client: connection.Client})
+	s.passwordTargets.Store(connectionID, &passwordTarget{host: *host, client: connection.Client, userID: actor.User.ID, sessionID: actor.ID})
+	defer s.passwordTargets.Delete(connectionID)
 	defer s.uploads.Delete(connectionID)
-	writer.send(terminalMessage{Type: "connected", Message: "connected", Session: connectionID})
+	writer.send(terminalMessage{Type: "connected", Message: "connected", Session: connectionID, User: host.User})
 	done := make(chan error, 1)
 	go func() { done <- session.Wait() }()
 	messages := make(chan terminalMessage, 16)
@@ -193,6 +218,9 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		case message := <-messages:
 			switch message.Type {
 			case "input":
+				if s.sessionLocked(actor) {
+					continue
+				}
 				_, _ = io.WriteString(stdin, message.Data)
 			case "resize":
 				cols, rows = terminalSize(message.Cols, message.Rows)
@@ -205,6 +233,28 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// A temporary login never borrows the configured user's password or private key.
+func applyTerminalUser(host *config.SSHHost, username, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil
+	}
+	if len(username) > 256 || strings.ContainsAny(username, " \t\r\n\x00") {
+		return errors.New("SSH 用户名格式无效")
+	}
+	if username == host.User {
+		return nil
+	}
+	if password == "" {
+		return errors.New("使用其他用户登录时，请填写该用户的密码")
+	}
+	host.User = username
+	host.SavePassword = false
+	host.AuthType = config.AuthPassword
+	host.IdentityFile = ""
+	return nil
+}
+
 func terminalSize(cols, rows int) (int, int) {
 	if cols < 20 || cols > 500 {
 		cols = 120
@@ -215,16 +265,16 @@ func terminalSize(cols, rows int) (int, int) {
 	return cols, rows
 }
 
-func browserHostKeyCallback(conn *websocket.Conn, writer *socketWriter) (ssh.HostKeyCallback, error) {
-	home, err := os.UserHomeDir()
+func browserHostKeyCallback(conn *websocket.Conn, writer *socketWriter, userID int64) (ssh.HostKeyCallback, error) {
+	base, err := config.Dir()
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(home, ".ssh")
+	dir := filepath.Join(base, "web-known-hosts")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "known_hosts")
+	path := filepath.Join(dir, strconv.FormatInt(userID, 10))
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		if err := os.WriteFile(path, nil, 0600); err != nil {
 			return nil, err

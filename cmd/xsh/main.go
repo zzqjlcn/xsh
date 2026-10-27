@@ -326,16 +326,6 @@ func passwordForHost(host config.SSHHost, prompt string) (string, error) {
 }
 
 func savePassword(alias, password string) error {
-	err := credential.SetPassword(alias, password)
-	if !errors.Is(err, credential.ErrUnavailable) {
-		return err
-	}
-	if !credential.VaultExists() {
-		message := "Secret Service is unavailable. Use ~/.config/xsh/secrets.db with a master password?"
-		if !form.Confirm(message, true) {
-			return err
-		}
-	}
 	return credential.SetVaultPassword(alias, password, form.ReadPassword)
 }
 

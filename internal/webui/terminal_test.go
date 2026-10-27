@@ -1,9 +1,11 @@
 package webui
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net"
@@ -22,7 +24,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/zzqjlcn/xsh/internal/config"
-	"github.com/zzqjlcn/xsh/internal/credential"
+	"github.com/zzqjlcn/xsh/internal/webstore"
 )
 
 func TestBrowserTerminalSession(t *testing.T) {
@@ -37,12 +39,10 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 	configDir := t.TempDir()
 	t.Setenv("XSH_CONFIG_HOME", configDir)
 	t.Setenv("USERPROFILE", t.TempDir())
-	credential.LockVault()
-	if err := credential.SetVaultPassword("test", "secret", func(string) (string, error) { return "test-master", nil }); err != nil {
+	actor, key, err := webstore.CreateUser("admin", "test-master", true, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	credential.LockVault()
-	t.Cleanup(credential.LockVault)
 	sshAddress, stopSSH := startTestSSHServer(t)
 	defer stopSSH()
 	hostname, portText, err := net.SplitHostPort(sshAddress)
@@ -50,11 +50,7 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	port, _ := strconv.Atoi(portText)
-	store, err := config.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Add(config.SSHHost{Name: "test", Hostname: hostname, Port: port, User: "tester", AuthType: config.AuthPassword, SavePassword: true}); err != nil {
+	if err := webstore.SaveHost(actor.ID, key, config.SSHHost{Name: "test", Hostname: hostname, Port: port, User: "tester", AuthType: config.AuthPassword}, webstore.Secret{Password: "secret"}, false, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -64,7 +60,7 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 	}
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
-	loginRequest, _ := http.NewRequest(http.MethodPost, httpServer.URL+root+"/api/login", strings.NewReader(`{"password":"test-master"}`))
+	loginRequest, _ := http.NewRequest(http.MethodPost, httpServer.URL+root+"/api/login", strings.NewReader(`{"username":"admin","password":"test-master"}`))
 	loginRequest.Header.Set("Content-Type", "application/json")
 	loginResponse, err := http.DefaultClient.Do(loginRequest)
 	if err != nil {
@@ -112,6 +108,31 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 			t.Fatal(message.Message)
 		}
 	}
+	screenAction := func(path, password string, want int) {
+		t.Helper()
+		body := ""
+		if password != "" {
+			raw, _ := json.Marshal(map[string]string{"password": password})
+			body = string(raw)
+		}
+		request, _ := http.NewRequest("POST", httpServer.URL+root+path, strings.NewReader(body))
+		request.AddCookie(loginResponse.Cookies()[0])
+		request.Header.Set("X-XSH-Token", login.Token)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != want {
+			t.Fatalf("%s: %d %s", path, response.StatusCode, data)
+		}
+	}
+	screenAction("/api/lock", "", 204)
+	screenAction("/api/unlock", "wrong-password", 403)
+	screenAction("/api/unlock", "test-master", 204)
+	// Transfers and terminal echo below reuse the very same SSH and WebSocket
+	// connections established before locking the screen.
 	remoteDir := t.TempDir()
 	content := strings.Repeat("文件内容\x00\xff", 10000)
 	upload := func(name, session, requestToken string, authenticated bool, want int) {
@@ -206,6 +227,41 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 	remoteRequest("/api/download", filepath.Join(remoteDir, "子目录"), true, http.StatusBadRequest)
 	remoteRequest("/api/download", filepath.Join(remoteDir, "missing"), true, http.StatusNotFound)
 	remoteRequest("/api/files", filepath.Join(remoteDir, "测试.bin"), true, http.StatusBadRequest)
+	failedBody := `{"session":"` + uploadSession + `","current_password":"wrong-current","password":"New-password123!","confirm":"New-password123!"}`
+	failedRequest, _ := http.NewRequest(http.MethodPost, httpServer.URL+root+"/api/password", strings.NewReader(failedBody))
+	failedRequest.AddCookie(loginResponse.Cookies()[0])
+	failedRequest.Header.Set("X-XSH-Token", login.Token)
+	failedResponse, err := http.DefaultClient.Do(failedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedData, _ := io.ReadAll(failedResponse.Body)
+	failedResponse.Body.Close()
+	if failedResponse.StatusCode != http.StatusBadGateway {
+		t.Fatalf("rejected password: %d %s", failedResponse.StatusCode, failedData)
+	}
+	if secret, err := webstore.ReadSecret(actor.ID, key, "test"); err != nil || secret.Password != "secret" {
+		t.Fatal("failed change modified saved password")
+	}
+	changeBody := `{"session":"` + uploadSession + `","password":"New-password123!","confirm":"New-password123!"}`
+	changeRequest, err := http.NewRequest(http.MethodPost, httpServer.URL+root+"/api/password", strings.NewReader(changeBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeRequest.AddCookie(loginResponse.Cookies()[0])
+	changeRequest.Header.Set("X-XSH-Token", login.Token)
+	changeResponse, err := http.DefaultClient.Do(changeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeData, _ := io.ReadAll(changeResponse.Body)
+	changeResponse.Body.Close()
+	if changeResponse.StatusCode != http.StatusOK || !strings.Contains(string(changeData), `"changed":true`) {
+		t.Fatalf("change password: %d %s", changeResponse.StatusCode, changeData)
+	}
+	if secret, err := webstore.ReadSecret(actor.ID, key, "test"); err != nil || secret.Password != "New-password123!" {
+		t.Fatalf("updated credential: %v", err)
+	}
 	if err := conn.WriteJSON(terminalMessage{Type: "input", Data: "hello\n"}); err != nil {
 		t.Fatal(err)
 	}
@@ -218,9 +274,39 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 			break
 		}
 	}
+	logoutRequest, _ := http.NewRequest("POST", httpServer.URL+root+"/api/logout", nil)
+	logoutRequest.AddCookie(loginResponse.Cookies()[0])
+	logoutRequest.Header.Set("X-XSH-Token", login.Token)
+	logoutResponse, err := http.DefaultClient.Do(logoutRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logoutResponse.Body.Close()
+	if logoutResponse.StatusCode != 204 {
+		t.Fatal("logout failed")
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var afterLogout terminalMessage
+	for {
+		err := conn.ReadJSON(&afterLogout)
+		if err == nil {
+			continue
+		}
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			t.Fatal("logout did not close the existing terminal")
+		}
+		break
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "web-known-hosts", strconv.FormatInt(actor.ID, 10))); err != nil {
+		t.Fatal("account-specific known_hosts missing")
+	}
 }
 
 func startTestSSHServer(t *testing.T) (string, func()) {
+	return startTestSSHServerForUser(t, "")
+}
+func startTestSSHServerForUser(t *testing.T, expectedUser string) (string, func()) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -231,7 +317,7 @@ func startTestSSHServer(t *testing.T) (string, func()) {
 		t.Fatal(err)
 	}
 	serverConfig := &ssh.ServerConfig{PasswordCallback: func(metadata ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-		if string(password) != "secret" {
+		if string(password) != "secret" || expectedUser != "" && metadata.User() != expectedUser {
 			return nil, io.ErrUnexpectedEOF
 		}
 		return nil, nil
@@ -277,6 +363,29 @@ func startTestSSHServer(t *testing.T) (string, func()) {
 						}
 						defer server.Close()
 						_ = server.Serve()
+						return
+					case "exec":
+						var payload struct{ Command string }
+						if ssh.Unmarshal(request.Payload, &payload) != nil || payload.Command != "LC_ALL=C passwd" {
+							_ = request.Reply(false, nil)
+							continue
+						}
+						_ = request.Reply(true, nil)
+						reader := bufio.NewReader(channel)
+						for index, prompt := range []string{"Current password: ", "New password: ", "Retype new password: "} {
+							_, _ = io.WriteString(channel, prompt)
+							value, err := reader.ReadString('\n')
+							expected := "New-password123!"
+							if index == 0 {
+								expected = "secret"
+							}
+							if err != nil || strings.TrimSuffix(value, "\n") != expected {
+								_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
+								return
+							}
+						}
+						_, _ = io.WriteString(channel, "password updated successfully\r\n")
+						_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 						return
 					case "pty-req", "window-change":
 						_ = request.Reply(true, nil)
