@@ -201,6 +201,10 @@ func (s *server) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) api(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/about" {
+		s.about(w, r)
+		return
+	}
 	if r.URL.Path == "/api/hosts/test" {
 		s.testConnection(w, r)
 		return

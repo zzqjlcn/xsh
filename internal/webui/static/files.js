@@ -44,14 +44,13 @@ function renderRemote() {
       if (fileState.selected.has(entry.name)) fileState.selected.clear(); else fileState.selected = new Set([entry.name]);
       renderRemote();
     };
-    if (checkbox) checkbox.onchange = toggle;
+    if (checkbox) { checkbox.onclick = event => event.stopPropagation(); checkbox.onchange = toggle; }
     const button = row.querySelector('button');
-    button.onclick = () => { if (!entry.directory) toggle(); };
     const open = () => {
-      if (!fileState.busy && entry.directory) fileAction(() => loadRemote(joinRemote(fileState.remotePath, entry.name)));
+      if (!fileState.busy && !fileState.loading && entry.directory) fileAction(() => loadRemote(joinRemote(fileState.remotePath, entry.name)));
     };
-    button.ondblclick = open;
-    button.onkeydown = event => { if (event.key === 'Enter' && entry.directory) { event.preventDefault(); open(); } };
+    row.onclick = () => entry.directory ? open() : toggle();
+    button.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); entry.directory ? open() : toggle(); } };
     if (entry.directory) {
       row.addEventListener('dragover', event => { event.preventDefault(); event.stopPropagation(); row.classList.add('drop-target'); });
       row.addEventListener('dragleave', event => { if (!row.contains(event.relatedTarget)) row.classList.remove('drop-target'); });
@@ -67,20 +66,22 @@ function renderRemote() {
 async function fileAction(action) {
   try { await action(); } catch (error) { if (error.name !== 'AbortError') fileMessage(error.message, true); }
 }
-async function loadRemote(directory = fileState.remotePath || '.') {
+async function loadRemote(directory = fileState.remotePath || '.', currentDirectory = false) {
   const generation = ++fileState.generation;
   fileState.loading = true; fileControls();
   try {
     const query = new URLSearchParams({ session: fileState.target.uploadSession, path: directory });
+    if (currentDirectory) query.set('cwd', '1');
     const response = await fetch(`api/files?${query}`);
     if (!response.ok) throw new Error((await response.text()).trim());
     const data = await response.json();
     if (generation !== fileState.generation) return;
     fileState.remotePath = data.path; fileState.remote = data.entries;
-    fileState.target.filePath = data.path; fileState.selected.clear();
+    fileState.selected.clear();
     fEl('remote-path').value = data.path;
     fEl('upload-target').textContent = data.path;
     renderRemote();
+    if (data.cwd_unavailable) fileMessage('无法读取当前终端工作目录，已打开用户主目录；可在路径栏手动切换。');
   } catch (error) {
     if (generation === fileState.generation) { fEl('remote-path').value = fileState.remotePath; throw error; }
   } finally {
@@ -95,9 +96,9 @@ fEl('btn-upload').onclick = () => fileAction(async () => {
   fEl('files-host').textContent = `SSH · ${target.host}`;
   fEl('remote-path').value = ''; fEl('upload-target').textContent = '加载中…';
   fEl('files-progress').hidden = true;
-  fileMessage('双击目录打开；选择文件或拖拽文件到列表即可上传。');
+  fileMessage('单击目录整行打开；单击文件整行选择，也可拖拽文件到列表上传。');
   renderRemote(); fm.showModal();
-  await loadRemote(target.filePath || '.');
+  await loadRemote('.', true);
 });
 function closeFiles() {
   if (fileState.busy) { fileMessage('请先等待传输完成或取消传输。'); return; }

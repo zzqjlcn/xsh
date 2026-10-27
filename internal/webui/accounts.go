@@ -73,6 +73,23 @@ func (s *server) users(w http.ResponseWriter, r *http.Request) {
 			s.revokeUser(input.ID)
 		}
 		w.WriteHeader(204)
+	case "DELETE":
+		var input struct {
+			ID int64 `json:"id"`
+		}
+		if !readJSON(w, r, &input) {
+			return
+		}
+		if err := webstore.DeleteUser(input.ID); err != nil {
+			if errors.Is(err, webstore.ErrNotFound) {
+				http.Error(w, "账号不存在或为管理员，无法删除。", 400)
+			} else {
+				http.Error(w, "删除账号失败，请重试。", 500)
+			}
+			return
+		}
+		s.revokeUser(input.ID)
+		w.WriteHeader(204)
 	default:
 		w.WriteHeader(405)
 	}

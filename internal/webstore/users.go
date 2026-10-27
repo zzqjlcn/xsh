@@ -255,6 +255,37 @@ func SetDisabled(id int64, disabled bool) error {
 	return err
 }
 
+func DeleteUser(id int64) error {
+	db, err := database.Open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`DELETE FROM web_users WHERE id=? AND admin=0`, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(`DELETE FROM web_hosts WHERE user_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM web_shares WHERE sender_id=? OR recipient_id=?`, id, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func ChangeLoginPassword(user User, current, next string, dataKey []byte) error {
 	if err := ValidatePassword(next); err != nil {
 		return err

@@ -32,14 +32,12 @@ func Open() (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Restrict newly created files, but preserve permissions on existing mounts.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 	f.Close()
-	if err := os.Chmod(path, 0600); err != nil {
-		return nil, err
-	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err

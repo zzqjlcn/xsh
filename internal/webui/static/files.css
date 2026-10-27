@@ -75,6 +75,7 @@
 .fm-table-wrap th:nth-child(2) { width: 100%; }
 .fm-table-wrap th:nth-child(3), .fm-table-wrap td:nth-child(3) { text-align: right; }
 .fm-table-wrap tr:hover { background: var(--bg-2); }
+.fm-table-wrap tr[data-index] { cursor: pointer; }
 .fm-table-wrap tr.selected { background: var(--ring); }
 .fm-table-wrap tr.drop-target { background: var(--ring); outline: 1px solid var(--acc); outline-offset: -1px; }
 .fm-table-wrap input { accent-color: var(--acc); }

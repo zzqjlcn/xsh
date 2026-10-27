@@ -39,6 +39,29 @@ There is no public account registration. The setup code is also stored in `web-s
 
 Run `./xsh` without a subcommand to open the terminal interface. For development, `go run ./cmd/xsh` and `go run ./cmd/xsh web` work without a separate build. Examples below assume `xsh` is on your `PATH`.
 
+## Docker
+
+With Docker Compose:
+
+```sh
+docker compose up -d --build
+docker compose logs -f xsh
+```
+
+Open `http://localhost:8080/` and use the setup code from the logs. Compose saves data in its `xsh-data` named volume and restarts the service automatically unless explicitly stopped. `docker compose down` preserves data; adding `-v` deletes the data volume.
+
+Or build and run directly:
+
+```sh
+docker build -t xsh .
+docker run -d --name xsh -p 8080:8080 -v xsh-data:/data xsh
+docker logs xsh
+```
+
+Open `http://localhost:8080/` and use the administrator setup code from the logs. The multi-stage build produces a static binary and uses `scratch` as the runtime image, running as user `65532:65532`. The `/data` volume preserves the database, encrypted credentials, setup code, and SSH host keys. Host bind mounts must be writable by this user. To set the version shown in About xsh, build with `--build-arg VERSION=v1.0.0`.
+
+Override the default arguments as needed, for example `docker run -d --name xsh -p 8080:8080 -v xsh-data:/data xsh web --host 0.0.0.0 --port 8080 --root-path /xsh`.
+
 ## Browser workspace
 
 ### Hosts and connections
@@ -54,6 +77,10 @@ New server keys require fingerprint confirmation; changed keys are rejected. Pas
 
 ### Tabs and split panes
 
+Press **Alt+O** anywhere in the unlocked workspace, including inputs and terminals, to open the host list and focus its search field. Any open dialog closes first. Pressing it again keeps the list open.
+
+**Settings → Security** enables automatic screen locking after five minutes without keyboard, mouse, or touch activity (on by default). Terminal output does not reset the timer. You can also enable immediate locking when switching browser tabs or minimizing the window (off by default), or lock immediately. These preferences are saved per account in the current browser. Locking keeps SSH connections open and requires the login password to resume. Background/sleep time counts toward inactivity; the page checks the deadline again when it becomes active.
+
 Click **+** beside the tabs to open a home tab while existing connections stay open. Right-click a tab for **New, Duplicate, Close, Close others, Close all, Vertical split,** and **Horizontal split**.
 
 Vertical splits place terminals side by side; horizontal splits stack them. Splits can be nested. Duplication and splitting establish a new SSH connection for the current terminal's user; temporary users must enter their password again. Right-click the relevant pane to split that specific terminal.
@@ -66,7 +93,7 @@ Terminals support ANSI 16/256 colors and truecolor, an `xterm-256color` PTY, and
 
 ### Accounts, sharing, and screen lock
 
-The settings icon contains **My account**, **Appearance**, and, for administrators, **User management**. Administrators can create, enable, and disable ordinary accounts. The login page remembers the last successfully used username in the current browser; it does not save the login password.
+The settings icon contains **My account**, **Appearance**, **About xsh**, and, for administrators, **User management**. About xsh shows the running version, source revision and commit time (when available), platform, Go version, and project link. Local builds show `dev`; set a release version with `go build -ldflags "-X github.com/zzqjlcn/xsh/internal/webui.Version=v1.0.0" -o xsh ./cmd/xsh`. Administrators can create, enable, disable, and delete ordinary accounts. Deletion requires confirmation, removes their hosts, saved credentials and sent/received shares, and disconnects their sessions. Administrator accounts cannot be deleted. The login page remembers the last successfully used username in the current browser; it does not save the login password.
 
 To share a host, open its editor and select **Share configuration**. Search and select one or more recipient accounts. The recipient opens the sharing inbox, chooses **Add**, and supplies their own SSH username and credentials.
 
@@ -82,7 +109,7 @@ Login sessions last up to 12 hours and expire when xsh restarts. Changing an acc
 
 ### File transfers
 
-After connecting, use the file-transfer toolbar icon to browse the focused terminal's host over its existing SSH connection. Double-click folders, enter a path, or use the up/refresh controls.
+After connecting, use the file-transfer toolbar icon to browse the focused terminal's host over its existing SSH connection. Each time it opens, it reads the terminal shell's current working directory on Linux. If the server cannot provide it, the dialog opens the user's home directory with a notice. Click anywhere in a folder row to open it, or anywhere in a file row to select it. You can also enter a path or use the up/refresh controls.
 
 Upload multiple files with the picker or drag them onto the current directory or a folder row. Transfers show progress and support cancellation; existing remote filenames are rejected. Downloads use the browser download manager. Browser transfers do not recursively upload/download directories; use the CLI for recursive copying.
 

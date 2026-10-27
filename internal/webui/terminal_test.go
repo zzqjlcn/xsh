@@ -172,9 +172,12 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 	if err := os.Mkdir(filepath.Join(remoteDir, "子目录"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	remoteRequest := func(endpoint, filePath string, authenticated bool, want int) ([]byte, http.Header) {
+	remoteRequest := func(endpoint, filePath string, authenticated bool, want int, currentDirectory ...bool) ([]byte, http.Header) {
 		t.Helper()
 		query := url.Values{"session": {uploadSession}, "path": {filepath.ToSlash(filePath)}}
+		if len(currentDirectory) > 0 && currentDirectory[0] {
+			query.Set("cwd", "1")
+		}
 		req, _ := http.NewRequest(http.MethodGet, httpServer.URL+root+endpoint+"?"+query.Encode(), nil)
 		if authenticated {
 			req.AddCookie(loginResponse.Cookies()[0])
@@ -195,6 +198,13 @@ func testBrowserTerminalSession(t *testing.T, root string) {
 	}
 	remoteRequest("/api/files", remoteDir, false, http.StatusUnauthorized)
 	remoteRequest("/api/download", filepath.Join(remoteDir, "测试.bin"), false, http.StatusUnauthorized)
+	fallback, _ := remoteRequest("/api/files", ".", true, http.StatusOK, true)
+	var fallbackInfo struct {
+		CWDUnavailable bool `json:"cwd_unavailable"`
+	}
+	if err := json.Unmarshal(fallback, &fallbackInfo); err != nil || !fallbackInfo.CWDUnavailable {
+		t.Fatalf("missing working-directory fallback: %s, %v", fallback, err)
+	}
 	listing, _ := remoteRequest("/api/files", remoteDir, true, http.StatusOK)
 	var files struct {
 		Path    string        `json:"path"`
@@ -307,6 +317,10 @@ func startTestSSHServer(t *testing.T) (string, func()) {
 	return startTestSSHServerForUser(t, "")
 }
 func startTestSSHServerForUser(t *testing.T, expectedUser string) (string, func()) {
+	return startTestSSHServerWithWorkingDirectory(t, expectedUser, nil)
+}
+
+func startTestSSHServerWithWorkingDirectory(t *testing.T, expectedUser string, cwd func() string) (string, func()) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -366,6 +380,12 @@ func startTestSSHServerForUser(t *testing.T, expectedUser string) (string, func(
 						return
 					case "exec":
 						var payload struct{ Command string }
+						if ssh.Unmarshal(request.Payload, &payload) == nil && payload.Command == workingDirectoryCommand && cwd != nil {
+							_ = request.Reply(true, nil)
+							_, _ = io.WriteString(channel, cwd()+"\n")
+							_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+							return
+						}
 						if ssh.Unmarshal(request.Payload, &payload) != nil || payload.Command != "LC_ALL=C passwd" {
 							_ = request.Reply(false, nil)
 							continue

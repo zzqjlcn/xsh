@@ -40,6 +40,15 @@ func (s *server) remoteFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value := r.URL.Query().Get("path")
+	cwdUnavailable := false
+	if r.URL.Path == "/api/files" && r.URL.Query().Get("cwd") == "1" {
+		if directory, err := terminalWorkingDirectory(r.Context(), target.Client); err == nil {
+			value = directory
+		} else {
+			value = "."
+			cwdUnavailable = true
+		}
+	}
 	if strings.ContainsRune(value, 0) {
 		http.Error(w, "路径无效。", http.StatusBadRequest)
 		return
@@ -90,9 +99,10 @@ func (s *server) remoteFiles(w http.ResponseWriter, r *http.Request) {
 		})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
-			Path    string        `json:"path"`
-			Entries []remoteEntry `json:"entries"`
-		}{resolved, entries})
+			Path           string        `json:"path"`
+			Entries        []remoteEntry `json:"entries"`
+			CWDUnavailable bool          `json:"cwd_unavailable,omitempty"`
+		}{resolved, entries, cwdUnavailable})
 		return
 	}
 	info, err := client.Stat(value)

@@ -69,6 +69,7 @@ async function loadHosts() {
   const data = await response.json();
   if (generation !== authGeneration) return false;
   hosts = data.hosts || []; token = data.token; currentUser = data.user;
+  loadSecuritySettings();
   document.querySelector('#settings-nav-users').hidden = !currentUser?.admin;
   appEl.hidden = false;
   if (masterDialog.open) masterDialog.close();
@@ -76,6 +77,7 @@ async function loadHosts() {
 }
 async function lockView(status) {
   const generation = ++authGeneration;
+  securitySettingsKey = ''; lockNeedsSync = false; lockRequest = null;
   screenLocked = false; settingsUsers = [];
   document.querySelector('#screen-unlock-password').value = '';
   for (const id of Array.from(sessions.keys())) closeSession(id);
@@ -131,6 +133,7 @@ document.querySelector('#master-form').onsubmit = async event => {
     password.value = ''; confirmation.value = ''; document.querySelector('#legacy-password').value = '';
     if (!response.ok) throw new Error((await response.text()).trim());
     const data = await response.json(); if (generation !== authGeneration) return; token = data.token; currentUser = data.user;
+    lastSecurityActivity = Date.now();
     try { localStorage.setItem(lastLoginStorageKey, data.user.username); } catch (_) {}
     document.querySelector('#setup-code').value = ''; await loadHosts();
   } catch (failure) { error.textContent = failure.message; }
@@ -158,7 +161,7 @@ function updateCount() {
   countChip.textContent = hosts.length > 99 ? '99+' : hosts.length;
   countChip.hidden = !hosts.length;
   const button = document.querySelector('#btn-open-hosts');
-  button.title = `主机列表 · ${hosts.length} 台 (q)`;
+  button.title = `主机列表 · ${hosts.length} 台 (Alt+O)`;
   button.setAttribute('aria-label', `主机列表，${hosts.length} 台`);
 }
 function filteredHosts() {
@@ -234,6 +237,17 @@ document.querySelector('#drawer-close').addEventListener('click', closeDrawer);
 backdrop.addEventListener('click', closeDrawer);
 /* 「新增」按钮：与 a 快捷键一致 → 关闭抽屉后打开新增主机对话框 */
 document.querySelector('#btn-add-host').addEventListener('click', () => { closeDrawer(); setTimeout(() => openHostModal(), 80); });
+
+/* Alt+O 在输入框、终端和弹窗内均可打开主机列表。捕获阶段拦截，避免传入远端终端。 */
+document.addEventListener('keydown', event => {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.code !== 'KeyO') return;
+  if (appEl.hidden || screenLocked || !currentUser) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+  openDrawer();
+  searchInput.focus();
+}, true);
 
 /* 全局快捷键：/ 与 q 打开/关闭列表 · a 新增（仅非输入态） */
 document.addEventListener('keydown', event => {
@@ -726,25 +740,88 @@ function showScreenLock() {
   if (!screenLockDialog.open) screenLockDialog.showModal();
   document.querySelector('#screen-unlock-password').focus();
 }
-document.querySelector('#btn-screen-lock').addEventListener('click', async () => {
+const securityIdleLock = document.querySelector('#security-idle-lock');
+const securityAwayLock = document.querySelector('#security-away-lock');
+let securitySettingsKey = '', lastSecurityActivity = Date.now(), lockNeedsSync = false, lockRequest = null, lastLockAttempt = 0;
+const securityIdleTimeout = 5 * 60 * 1000;
+function loadSecuritySettings() {
+  if (!currentUser) return;
+  const key = `xsh-security:${new URL('.', location.href).pathname}:${currentUser.id}:${currentUser.username}`;
+  if (key === securitySettingsKey) return;
+  securitySettingsKey = key; lastSecurityActivity = Date.now();
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(key)) || {}; } catch (_) {}
+  securityIdleLock.checked = saved.idleLock !== false;
+  securityAwayLock.checked = saved.awayLock === true;
+}
+function saveSecuritySettings() {
+  if (!securitySettingsKey) return;
+  const message = document.querySelector('#security-msg');
   try {
-    const response = await fetch('api/lock',{method:'POST',headers:{'X-XSH-Token':token}});
-    if (response.status === 401) { await lockView(); return; }
-    if (!response.ok) throw new Error((await response.text()).trim());
-    showScreenLock();
-  } catch(error) { console.error(error.message); }
+    localStorage.setItem(securitySettingsKey, JSON.stringify({idleLock:securityIdleLock.checked, awayLock:securityAwayLock.checked}));
+    message.textContent = '';
+  } catch (_) { message.textContent = '浏览器未允许保存，设置仅在本次页面中生效。'; }
+  lastSecurityActivity = Date.now();
+}
+for (const input of [securityIdleLock, securityAwayLock]) input.addEventListener('change', saveSecuritySettings);
+function lockWorkspace() {
+  if (!currentUser || lockRequest) return lockRequest;
+  const generation = authGeneration;
+  lockNeedsSync = true; lastLockAttempt = Date.now();
+  if (!screenLocked) showScreenLock();
+  const request = (async () => {
+    try {
+      const response = await fetch('api/lock',{method:'POST',headers:{'X-XSH-Token':token}});
+      if (generation !== authGeneration) return;
+      if (response.status === 401) { await lockView(); return; }
+      if (!response.ok) throw new Error((await response.text()).trim());
+      lockNeedsSync = false;
+      if (screenLocked) document.querySelector('#screen-lock-error').textContent = '';
+    } catch (_) {
+      if (generation === authGeneration && screenLocked) document.querySelector('#screen-lock-error').textContent = '页面已锁定，暂时无法同步到服务器，正在重试。';
+    }
+  })();
+  lockRequest = request;
+  request.finally(() => { if (lockRequest === request) lockRequest = null; });
+  return request;
+}
+function checkSecurityLock() {
+  if (!currentUser) return;
+  if (screenLocked) {
+    if (lockNeedsSync && Date.now() - lastLockAttempt >= 5000) lockWorkspace();
+    return;
+  }
+  if (securityIdleLock.checked && Date.now() - lastSecurityActivity >= securityIdleTimeout) lockWorkspace();
+}
+function recordSecurityActivity(event) {
+  if (!event.isTrusted || !currentUser || screenLocked) return;
+  // Check the deadline before accepting the first interaction after sleep/background throttling.
+  checkSecurityLock();
+  if (screenLocked) { event.preventDefault(); event.stopImmediatePropagation(); }
+  else lastSecurityActivity = Date.now();
+}
+for (const type of ['keydown','pointerdown','pointermove','wheel','touchstart']) window.addEventListener(type, recordSecurityActivity, {capture:true});
+document.addEventListener('visibilitychange', () => {
+  if (!currentUser || screenLocked) return;
+  if (document.hidden && securityAwayLock.checked) lockWorkspace();
+  else checkSecurityLock();
 });
+window.addEventListener('focus', checkSecurityLock);
+window.addEventListener('pageshow', checkSecurityLock);
+setInterval(checkSecurityLock, 1000);
+for (const id of ['btn-screen-lock','security-lock-now']) document.getElementById(id).addEventListener('click', lockWorkspace);
 screenLockDialog.addEventListener('cancel', event => event.preventDefault());
 document.querySelector('#screen-unlock-form').addEventListener('submit', async event => {
   event.preventDefault(); const submit = event.submitter, input = document.querySelector('#screen-unlock-password');
   submit.disabled = true;
   try {
+    if (lockRequest) await lockRequest;
     const response = await fetch('api/unlock',{method:'POST',headers:{'Content-Type':'application/json','X-XSH-Token':token},body:JSON.stringify({password:input.value})});
     input.value = '';
     if (response.status === 401) { await lockView(); return; }
     if (!response.ok) throw new Error((await response.text()).trim());
     if (!await loadHosts()) return;
-    screenLocked = false; screenLockDialog.close();
+    screenLocked = false; lockNeedsSync = false; lastSecurityActivity = Date.now(); screenLockDialog.close();
     const active = sessions.get(activeSessionId);
     if (active) requestAnimationFrame(() => { try { active.fitAddon.fit(); active.terminal.focus(); } catch (_) {} });
   } catch(error) { document.querySelector('#screen-lock-error').textContent = error.message; input.focus(); }
@@ -807,7 +884,7 @@ for (const button of document.querySelectorAll('[data-theme-choice]')) button.ad
 async function initialize() {
   const statusResponse = await fetch('api/auth/status');
   const status = statusResponse.ok ? await statusResponse.json() : {};
-  if (status.authenticated && status.locked) { currentUser = status.user; token = status.token; showScreenLock(); }
+  if (status.authenticated && status.locked) { currentUser = status.user; token = status.token; loadSecuritySettings(); showScreenLock(); }
   else if (status.authenticated) await loadHosts();
   else await lockView(status);
 }
@@ -1062,17 +1139,42 @@ function renderUsers() {
         try { await accountRequest('api/users','PUT',{id:user.id,disabled:!user.disabled}); await loadUsers(); }
         catch(error) { document.querySelector('#account-msg').textContent = error.message; button.disabled = false; }
       }; actions.append(button);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'users-status-action users-delete-action'; remove.textContent = '删除'; remove.setAttribute('aria-label', `删除 ${user.username}`);
+      remove.onclick = async () => {
+        if (!window.confirm(`确认删除账号「${user.username}」？\n\n该账号的主机、保存的凭据及收发分享记录将永久删除，现有连接会断开。此操作无法撤销。`)) return;
+        button.disabled = true; remove.disabled = true;
+        document.querySelector('#account-msg').textContent = '';
+        try { await accountRequest('api/users','DELETE',{id:user.id}); await loadUsers(); }
+        catch(error) { document.querySelector('#account-msg').textContent = error.message; button.disabled = false; remove.disabled = false; }
+      }; actions.append(remove);
     }
     row.append(identity,role,state,actions); body.append(row);
   }
 }
 async function loadUsers() { if (!currentUser?.admin) return; settingsUsers = await accountRequest('api/users'); renderUsers(); }
+async function loadAbout() {
+  const details = document.querySelector('.about-details');
+  details.setAttribute('aria-busy', 'true');
+  for (const id of ['version','revision','commit-time','platform','go-version']) document.getElementById(`about-${id}`).textContent = '读取中…';
+  try {
+    const info = await accountRequest('api/about');
+    document.querySelector('#about-version').textContent = info.version === 'dev' ? '开发版本 (dev)' : info.version;
+    document.querySelector('#about-revision').textContent = info.revision ? `${info.revision.slice(0, 12)}${info.modified ? '（含未提交修改）' : ''}` : '未提供';
+    document.querySelector('#about-commit-time').textContent = info.commit_time ? new Date(info.commit_time).toLocaleString() : '未提供';
+    document.querySelector('#about-platform').textContent = info.platform;
+    document.querySelector('#about-go-version').textContent = info.go_version;
+  } catch (error) {
+    for (const id of ['version','revision','commit-time','platform','go-version']) document.getElementById(`about-${id}`).textContent = '读取失败';
+    if (!document.querySelector('[data-settings-panel="about"]').hidden) document.querySelector('#account-msg').textContent = error.message;
+  } finally { details.setAttribute('aria-busy', 'false'); }
+}
 async function selectSettingsTab(tab) {
   if (tab === 'users' && !currentUser?.admin) tab = 'account';
   for (const button of document.querySelectorAll('[data-settings-tab]')) { const active = button.dataset.settingsTab === tab; button.classList.toggle('active',active); if (active) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current'); }
   for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== tab;
   document.querySelector('#account-msg').textContent = '';
   if (tab === 'users') { try { await loadUsers(); } catch(error) { document.querySelector('#account-msg').textContent = error.message; } }
+  if (tab === 'about') await loadAbout();
 }
 for (const button of document.querySelectorAll('[data-settings-tab]')) button.addEventListener('click', () => selectSettingsTab(button.dataset.settingsTab));
 document.querySelector('#users-search').addEventListener('input',renderUsers);

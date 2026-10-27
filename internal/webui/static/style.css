@@ -642,6 +642,16 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 .settings-heading > .btn { flex-shrink:0; margin-right:8px; }
 .settings-count { padding:3px 6px; border:1px solid var(--line-2); border-radius:5px; color:var(--tx-3); font:500 11px/1 "Cascadia Mono",Consolas,monospace; }
 .settings-panel { animation:settings-enter .15s ease-out; }
+.about-brand { display:flex; align-items:center; gap:16px; padding-bottom:28px; }
+.about-brand img { flex-shrink:0; object-fit:contain; }
+.about-brand h3 { font-size:24px; margin:0 0 6px; letter-spacing:-.03em; }
+.about-brand p { color:var(--tx-3); font-size:12px; margin:0; line-height:1.6; }
+.about-details { margin:0; border-top:1px solid var(--line-1); }
+.about-details > div { display:flex; align-items:baseline; gap:20px; padding:16px 0; border-bottom:1px solid var(--line-1); font-size:12px; line-height:1.6; }
+.about-details dt { flex:0 0 76px; color:var(--tx-3); }
+.about-details dd { margin:0; min-width:0; overflow-wrap:anywhere; color:var(--tx-1); }
+.about-details a { color:var(--acc); text-decoration:none; }
+.about-details a:hover { text-decoration:underline; }
 @keyframes settings-enter { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
 .settings-account-summary { display:flex; align-items:center; gap:13px; padding-bottom:24px; margin-bottom:25px; border-bottom:1px solid var(--line-1); }
 .settings-profile-avatar { display:grid; place-items:center; width:44px; height:44px; background:var(--bg-2); border:1px solid var(--line-2); border-radius:11px; color:var(--acc); font:600 16px/1 "Cascadia Mono",Consolas,monospace; }
@@ -672,11 +682,26 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 .users-actions,.user-actions-heading { text-align:right; }
 .users-status-action { border:0; background:transparent; padding:5px 0 5px 8px; color:var(--tx-3); font:inherit; font-size:11px; cursor:pointer; }
 .users-status-action:hover { color:var(--acc); }
+.users-actions { white-space:nowrap; }
+.users-delete-action { margin-left:10px; color:var(--err); }
+.users-delete-action:hover { color:var(--err); text-decoration:underline; }
 .users-status-action:disabled { opacity:.4; cursor:wait; }
 .users-no-action { color:var(--tx-3); }
 .users-empty { text-align:center; height:140px; color:var(--tx-3); }
 .settings-table-note { font-size:10.5px; color:var(--tx-3); margin:18px 0 0; }
 .theme-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; max-width:500px; }
+.security-options { border-top:1px solid var(--line-1); }
+.security-option { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:22px 0; border-bottom:1px solid var(--line-1); }
+.security-option > span { min-width:0; }
+.security-option strong { display:block; font-size:13px; font-weight:500; }
+.security-option small { display:block; margin-top:8px; font-size:11px; line-height:1.7; color:var(--tx-3); }
+.security-option .btn { flex-shrink:0; }
+.security-option input { appearance:none; flex:0 0 34px; width:34px; height:20px; margin:0; border:1px solid var(--line-2); border-radius:12px; background:var(--bg-2); cursor:pointer; position:relative; }
+.security-option input::after { content:""; position:absolute; width:12px; height:12px; top:3px; left:3px; background:var(--tx-3); border-radius:50%; transition:transform .15s; }
+.security-option input:checked { background:var(--acc); border-color:var(--acc); }
+.security-option input:checked::after { transform:translateX(14px); background:var(--bg-0); }
+.security-option input:focus-visible { outline:2px solid var(--acc); outline-offset:4px; }
+.security-note { color:var(--tx-3); font-size:11px; line-height:1.8; margin:20px 0 0; }
 .theme-option { text-align:left; padding:9px; border:1px solid var(--line-2); border-radius:10px; background:transparent; color:var(--tx-2); cursor:pointer; transition:border-color .15s,box-shadow .15s; }
 .theme-option:hover { border-color:var(--tx-3); }
 .theme-option[aria-pressed="true"] { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
@@ -736,7 +761,7 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
  .settings-shell { width:calc(100vw - 24px); height:calc(100dvh - 32px); flex-direction:column; }
  .settings-sidebar { width:100%; flex:0 0 auto; padding:18px 16px 10px; border-right:0; border-bottom:1px solid var(--line-1); }
  .settings-sidebar h2 { margin:0 4px 15px; }
- .settings-nav { display:flex; gap:5px; }
+ .settings-nav { display:flex; flex-wrap:wrap; gap:5px; }
  .settings-nav-item { width:auto; flex:1; justify-content:center; padding:10px 5px; gap:6px; font-size:11px; white-space:nowrap; }
  .settings-nav-item svg { width:14px; height:14px; }
  .settings-identity { display:none; }

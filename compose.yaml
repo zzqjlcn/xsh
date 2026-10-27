@@ -1,0 +1,12 @@
+services:
+  xsh:
+    build: .
+    image: xsh:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - xsh-data:/data
+
+volumes:
+  xsh-data:

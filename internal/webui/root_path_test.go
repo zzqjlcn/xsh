@@ -51,7 +51,7 @@ func TestMountedRoutesAndAssets(t *testing.T) {
 		if target != "/tools/xsh/?q=1" && target != "/tools/xsh/index.html" {
 			continue
 		}
-		for _, match := range regexp.MustCompile(`(?:src|href)="([^"]+)"`).FindAllStringSubmatch(w.Body.String(), -1) {
+		for _, match := range regexp.MustCompile(`<(?:script|link|img)\b[^>]*\b(?:src|href)="([^"]+)"`).FindAllStringSubmatch(w.Body.String(), -1) {
 			ref, err := url.Parse(match[1])
 			if err != nil {
 				t.Fatal(err)
