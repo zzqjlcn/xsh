@@ -1,4 +1,5 @@
 'use strict';
+document.addEventListener('contextmenu', event => event.preventDefault(), true);
 /* ============================================================
    xsh Web UI — 原型 1:1 落地（渲染层与真实后端契约融合）
    后端契约：/api/auth/status · /api/login|logout · /api/hosts(CRUD)
@@ -20,6 +21,8 @@ const hostForm = document.querySelector('#host-form');
 const drawer = document.querySelector('#host-drawer');
 const backdrop = document.querySelector('#drawer-backdrop');
 const drawerList = document.querySelector('#drawer-list');
+const hostMenu = document.querySelector('#host-context-menu');
+let contextHostName = '';
 const searchInput = document.querySelector('#host-search');
 const countChip = document.querySelector('#host-count-chip');
 const appEl = document.querySelector('#app');
@@ -36,7 +39,7 @@ function escapeHtml(value) {
 }
 function drawerOpen() { return drawer.classList.contains('open'); }
 function authLabel(value) {
-  return ({ auto: '自动', password: '密码', private_key: '私钥' })[value] || value || '自动';
+  return ({ auto: '密码', password: '密码', private_key: '私钥' })[value] || value || '密码';
 }
 function timeAgo(timestamp) {
   if (!timestamp) return '从未';
@@ -147,9 +150,10 @@ function openDrawer() {
   document.querySelector('#btn-open-hosts').setAttribute('aria-expanded', 'true');
   backdrop.hidden = false;
   requestAnimationFrame(() => { backdrop.classList.add('open'); drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false'); });
-  setTimeout(() => { if (!searchInput.value) searchInput.focus(); }, 240);
+  setTimeout(() => { if (drawerOpen() && hostMenu.hidden && !searchInput.value) searchInput.focus(); }, 240);
 }
 function closeDrawer() {
+  closeHostMenu();
   document.querySelector('#btn-open-hosts').setAttribute('aria-expanded', 'false');
   backdrop.classList.remove('open');
   drawer.classList.remove('open');
@@ -188,6 +192,7 @@ function hostRowHTML(h, i) {
   </div>`;
 }
 function renderDrawer() {
+  closeHostMenu();
   updateCount();
   const list = filteredHosts();
   if (!hosts.length) { drawerList.innerHTML = '<div class="drawer-empty"><span class="glyph">⌁</span>还没有主机，点「新增」创建第一条连接。</div>'; return; }
@@ -197,14 +202,57 @@ function renderDrawer() {
   drawerList.innerHTML = list.map((h, i) => hostRowHTML(h, i)).join('');
   drawerList.querySelectorAll('.host-item').forEach(row => {
     const h = list[+row.dataset.idx];
-    row.addEventListener('click', event => { if (!event.target.closest('.row-edit')) openConnect(h); });
+    row.setAttribute('aria-haspopup', 'menu');
+    row.addEventListener('click', event => { if (!event.target.closest('.row-edit')) connectToHost(h); });
+    row.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); openHostMenu(h, event.clientX, event.clientY); });
     row.addEventListener('keydown', event => {
       if (event.key === 'e' || event.key === 'E') { event.preventDefault(); openHostModal(h); }
-      else if (event.key === 'Delete') { event.preventDefault(); askDelete(); }
+      else if (event.key === 'Delete') { event.preventDefault(); askDelete(h); }
+      else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); const rect=row.getBoundingClientRect(); openHostMenu(h, rect.left, rect.bottom); }
     });
     row.querySelector('.row-edit').addEventListener('click', event => { event.stopPropagation(); openHostModal(h); });
   });
 }
+function connectToHost(host) {
+  if (screenLocked || !currentUser) return;
+  closeHostMenu();
+  if (host.save_password && host.user) { closeDrawer(); openTerminal(host.name, '', null, host.user); }
+  else openConnect(host);
+}
+function closeHostMenu() { hostMenu.hidden = true; contextHostName = ''; }
+function openHostMenu(host, x, y) {
+  if (screenLocked || !currentUser) return;
+  closeTabMenu(); closeTerminalMenu();
+  contextHostName = host.name; hostMenu.hidden = false;
+  const rect = hostMenu.getBoundingClientRect();
+  hostMenu.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;
+  hostMenu.style.top = `${Math.max(8, Math.min(y, innerHeight - rect.height - 8))}px`;
+  hostMenu.querySelector('button').focus({preventScroll:true});
+}
+hostMenu.addEventListener('click', event => {
+  const action = event.target.closest('[data-host-action]')?.dataset.hostAction;
+  const host = hosts.find(item => item.name === contextHostName);
+  if (!action || !host || screenLocked) return;
+  closeHostMenu();
+  if (action === 'connect') connectToHost(host);
+  else if (action === 'other-user') openConnect(host, null, '');
+  else if (action === 'edit') openHostModal(host);
+  else if (action === 'share') openShare(host.name);
+  else if (action === 'delete') askDelete(host);
+});
+hostMenu.addEventListener('keydown', event => {
+  if (event.key === 'Escape' || event.key === 'Tab') {
+    event.preventDefault(); const name = contextHostName; closeHostMenu();
+    const row = [...drawerList.querySelectorAll('.host-item')].find(item => filteredHosts()[+item.dataset.idx]?.name === name);
+    row?.focus();
+  } else if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
+    event.preventDefault(); const buttons = [...hostMenu.querySelectorAll('button')], index = buttons.indexOf(document.activeElement);
+    buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length-1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+  }
+});
+document.addEventListener('pointerdown', event => { if (!hostMenu.contains(event.target)) closeHostMenu(); });
+drawerList.addEventListener('scroll', closeHostMenu);
+window.addEventListener('resize', closeHostMenu);
 function setSel(i) {
   const list = filteredHosts();
   if (!list.length) return;
@@ -228,7 +276,7 @@ document.addEventListener('keydown', event => {
   const typing = event.target === searchInput;
   if (event.key === 'ArrowDown') { event.preventDefault(); setSel(selectedIdx + 1); }
   else if (event.key === 'ArrowUp') { event.preventDefault(); setSel(selectedIdx - 1); }
-  else if (event.key === 'Enter' || (event.key === ' ' && !typing)) { event.preventDefault(); openConnect(list[Math.max(0, selectedIdx)]); }
+  else if (event.key === 'Enter' || (event.key === ' ' && !typing)) { event.preventDefault(); connectToHost(list[Math.max(0, selectedIdx)]); }
 });
 searchInput.addEventListener('input', () => { selectedIdx = -1; renderDrawer(); });
 document.querySelector('#btn-open-hosts').addEventListener('click', openDrawer);
@@ -249,7 +297,21 @@ document.addEventListener('keydown', event => {
   searchInput.focus();
 }, true);
 
-/* 全局快捷键：/ 与 q 打开/关闭列表 · a 新增（仅非输入态） */
+// Browsers may reserve Ctrl+Tab; Alt+PageUp/PageDown provides an in-page alternative.
+ document.addEventListener('keydown', event => {
+  const controlTab = event.ctrlKey && !event.altKey && !event.metaKey && event.key === 'Tab';
+  const alternate = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && ['PageUp','PageDown'].includes(event.key);
+  if ((!controlTab && !alternate) || event.isComposing || appEl.hidden || screenLocked || document.querySelector('dialog[open]')) return;
+  const ids = [...workspaceTabs.keys()]; if (!ids.length) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  const direction = controlTab ? (event.shiftKey ? -1 : 1) : (event.key === 'PageUp' ? -1 : 1);
+  const index = ids.indexOf(activeTabId);
+  closeTabMenu(); closeTerminalMenu(); closeDrawer();
+  const group = workspaceTabs.get(ids[(index + direction + ids.length) % ids.length]);
+  activateWorkspaceTab(group.id);
+  if (!group.sessionIds.size) group.tab.focus();
+}, true);
+
 document.addEventListener('keydown', event => {
   if (appEl.hidden) return;
   if (document.querySelector('dialog[open]')) return;
@@ -262,13 +324,13 @@ document.addEventListener('keydown', event => {
 });
 
 /* ---------------- 主机编辑 / 删除 ---------------- */
-function authValue() { const rl = hostField('auth_type'); return (rl && rl.value) || 'auto'; }
+function authValue() { const rl = hostField('auth_type'); return (rl && rl.value) || 'password'; }
 function syncAuthUI() {
   const mode = authValue();
   const password = hostField('password');
   document.querySelector('#row-key').hidden = mode !== 'private_key';
   document.querySelector('#row-passhint').hidden = mode !== 'password';
-  hostField('private_key').required = mode === 'private_key' && hostForm.dataset.hasPrivateKey !== 'true';
+  document.querySelector('#f-key-display').required = mode === 'private_key' && hostForm.dataset.hasPrivateKey !== 'true';
   hostField('private_key').disabled = mode !== 'private_key';
   password.disabled = mode !== 'password';
   if (mode !== 'password') {
@@ -360,7 +422,97 @@ hostDialog.addEventListener('close', () => setJumpOpen(false));
 hostDialog.querySelector('.dlg').addEventListener('scroll', () => setJumpOpen(false));
 window.addEventListener('resize', () => setJumpOpen(false));
 
+function bindPrivateKeyFile(inputId, field, dialog, messageId) {
+  const input = document.getElementById(inputId);
+  const display = document.getElementById(`${field.id}-display`);
+  const editor = field.closest('.private-key-editor'), source = editor.querySelector('.private-key-source'), eye = editor.querySelector('[data-key-view]');
+  const clearButton = editor.querySelector('[data-key-clear]');
+  let fileName = '';
+  const syncDisplay = () => {
+    const hasKey = Boolean(field.value.trim());
+    display.value = hasKey ? fileName || '已粘贴私钥' : '';
+    display.title = hasKey ? fileName || '已粘贴私钥' : '';
+    display.disabled = field.disabled; display.placeholder = field.placeholder;
+    source.hidden = !hasKey; eye.hidden = !hasKey; clearButton.hidden = !hasKey;
+    source.querySelector('[data-source-file]').toggleAttribute('hidden', !fileName);
+    source.querySelector('[data-source-paste]').toggleAttribute('hidden', Boolean(fileName));
+    editor.classList.toggle('has-key', hasKey);
+  };
+  new MutationObserver(syncDisplay).observe(field, {attributes:true, attributeFilter:['disabled', 'placeholder']});
+  let revision = 0;
+  const reset = () => { revision++; input.value = ''; delete field.dataset.fileLoading; };
+  field.form.addEventListener('reset', reset);
+  const clear = () => { fileName = ''; field.value = ''; syncDisplay(); };
+  field.form.addEventListener('reset', clear);
+  dialog.addEventListener('close', () => { reset(); clear(); if (keyViewDialog.open) keyViewDialog.close(); });
+  field.addEventListener('input', () => { reset(); fileName = ''; syncDisplay(); });
+  clearButton.addEventListener('click', () => {
+    if (field.disabled) return;
+    field.value = ''; field.dispatchEvent(new Event('input', {bubbles:true}));
+    document.getElementById(messageId).textContent = '';
+    display.focus();
+  });
+  display.addEventListener('keydown', event => {
+    if (event.key === 'Backspace' || event.key === 'Delete') { event.preventDefault(); field.value = ''; field.dispatchEvent(new Event('input', {bubbles:true})); }
+  });
+  display.addEventListener('paste', event => {
+    const text = event.clipboardData?.getData('text');
+    if (text === undefined) return;
+    event.preventDefault(); field.value = text; field.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+  field.closest('.private-key-editor').querySelector('[data-key-paste]').addEventListener('click', async () => {
+    if (field.disabled || !dialog.open) return;
+    reset();
+    const current = revision, generation = authGeneration, message = document.getElementById(messageId);
+    const active = () => current === revision && generation === authGeneration && dialog.open && !field.disabled;
+    message.textContent = '';
+    display.focus();
+    try {
+      if (!navigator.clipboard?.readText) throw new Error('当前浏览器无法读取剪贴板，请在私钥框按 Ctrl+V 粘贴。');
+      const text = await navigator.clipboard.readText();
+      if (!active()) return;
+      if (new Blob([text]).size > 64 * 1024) throw new Error('私钥内容不能超过 64 KB。');
+      if (!text.trim()) throw new Error('剪贴板为空，请先复制私钥内容。');
+      field.value = text;
+      field.dispatchEvent(new Event('input', {bubbles:true}));
+    } catch (error) {
+      if (active()) message.textContent = error.name === 'NotAllowedError' || error.name === 'SecurityError'
+        ? '浏览器不允许读取剪贴板，请在私钥框按 Ctrl+V 粘贴。'
+        : error.message || '无法读取剪贴板，请在私钥框按 Ctrl+V 粘贴。';
+    }
+  });
+  input.addEventListener('change', async () => {
+    const file = input.files[0]; if (!file) return;
+    const current = ++revision, generation = authGeneration, message = document.getElementById(messageId);
+    message.textContent = ''; delete field.dataset.fileLoading;
+    if (file.size > 64 * 1024) { message.textContent = '私钥文件不能超过 64 KB。'; input.value = ''; return; }
+    field.dataset.fileLoading = 'true';
+    try {
+      const text = await file.text();
+      if (current !== revision || generation !== authGeneration || !dialog.open || field.disabled) return;
+      if (!/^-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/m.test(text)) throw new Error('未识别到私钥内容，请选择私钥文件，不是公钥文件。');
+      field.value = text; field.dispatchEvent(new Event('input', {bubbles:true})); fileName = file.name; syncDisplay();
+    } catch (error) {
+      if (current === revision && dialog.open && generation === authGeneration) message.textContent = error.message || '无法读取私钥文件。';
+    } finally {
+      if (current === revision) { delete field.dataset.fileLoading; input.value = ''; }
+    }
+  });
+}
+const keyViewDialog = document.querySelector('#dlg-key-view');
+const keyViewContent = document.querySelector('#key-view-content');
+keyViewDialog.addEventListener('close', () => { keyViewContent.textContent = ''; });
+for (const button of document.querySelectorAll('[data-key-view]')) button.addEventListener('click', () => {
+  const field = document.getElementById(button.dataset.keyView);
+  keyViewContent.textContent = field.value || '未输入私钥内容';
+  keyViewDialog.showModal();
+});
+bindPrivateKeyFile('f-key-file', hostField('private_key'), hostDialog, 'host-msg');
+bindPrivateKeyFile('cc-key-file', document.querySelector('#cc-private-key'), connectDialog, 'connect-msg');
+for (const button of document.querySelectorAll('[data-key-file]')) button.addEventListener('click', () => document.getElementById(button.dataset.keyFile).click());
+
 function openHostModal(host, shareId = 0) {
+  closeHostMenu();
   resetHostTest();
   const editing = Boolean(host && !shareId);
   acceptingShareId = shareId;
@@ -377,11 +529,11 @@ function openHostModal(host, shareId = 0) {
     for (const key of ['name', 'hostname', 'user', 'port']) hostField(key).value = host[key] ?? '';
     hostField('name').readOnly = editing;
     hostField('tags').value = (host.tags || []).join(', ');
-    hostField('auth_type').value = host.auth_type || 'auto';
-    hostField('password').placeholder = host.save_password ? '留空则保留当前已保存密码' : '输入要保存的主机密码';
+    hostField('auth_type').value = host.auth_type === 'private_key' ? 'private_key' : 'password';
+    hostField('password').placeholder = host.save_password ? '留空则保留当前已保存密码' : '留空则在连接时输入';
   } else {
     hostField('name').readOnly = false;
-    hostField('password').placeholder = '输入要保存的主机密码';
+    hostField('password').placeholder = '留空则在连接时输入';
   }
   syncAuthUI();
   if (host?.save_password) hostField('password').placeholder = '留空则保留当前已保存密码';
@@ -394,10 +546,11 @@ function openHostModal(host, shareId = 0) {
 }
 hostForm.onsubmit = async event => {
   event.preventDefault();
+  if (document.querySelector('#f-key-display').required && !hostField('private_key').value.trim()) { document.querySelector('#host-msg').textContent = '请选择私钥文件或粘贴私钥内容。'; return; }
+  if (hostField('private_key').dataset.fileLoading) { document.querySelector('#host-msg').textContent = '正在读取私钥文件，请稍候再保存。'; return; }
   const host = Object.fromEntries(new FormData(hostForm));
   host.port = Number(host.port);
   host.tags = host.tags.split(/[,，]/).map(value => value.trim()).filter(Boolean);
-  host.save_password = host.auth_type === 'password';
   const password = host.password || '';
   const privateKey = host.private_key || '';
   delete host.password; delete host.private_key;
@@ -411,7 +564,7 @@ async function mutateHost(method, host, password = '', privateKey = '') {
   });
   if (response.status === 401) { lockView(); return; }
   if (!response.ok) {
-    const msg = document.querySelector('#host-msg');
+    const msg = document.querySelector(method === 'DELETE' ? '#confirm-msg' : '#host-msg');
     msg.textContent = await response.text(); msg.className = 'form-msg error';
     return;
   }
@@ -420,17 +573,27 @@ async function mutateHost(method, host, password = '', privateKey = '') {
   await loadHosts();
 }
 document.querySelector('#btn-del-host').addEventListener('click', () => { hostDialog.close(); askDelete(); });
-function askDelete() {
+function askDelete(host = null) {
+  if (host) { editingOriginal = host.name; acceptingShareId = 0; }
+  closeDrawer();
   document.querySelector('#confirm-target').textContent = editingOriginal;
+  document.querySelector('#confirm-msg').textContent = '';
   confirmDialog.showModal();
 }
-document.querySelector('#confirm-ok').addEventListener('click', () => mutateHost('DELETE', {}));
+document.querySelector('#confirm-ok').addEventListener('click', async event => {
+  const button = event.currentTarget; button.disabled = true;
+  try { await mutateHost('DELETE', {}); }
+  catch (error) { document.querySelector('#confirm-msg').textContent = error.message; }
+  finally { button.disabled = false; }
+});
 
 /* ---------------- 连接 ---------------- */
-function openConnect(host, placement = null, username = host.user) {
+function openConnect(host, placement = null, username = host.user, authType = host.auth_type) {
   connectPlacement = placement;
   connectHost = host.name;
   closeDrawer();
+  document.querySelector('#connect-form').reset();
+  document.querySelector(authType === 'private_key' ? '#cc-auth-key' : '#cc-auth-password').checked = true;
   document.querySelector('#cc-av').textContent = (host.name || '?').charAt(0).toUpperCase();
   document.querySelector('#cc-name').textContent = host.name;
   document.querySelector('#cc-user').value = username;
@@ -438,39 +601,107 @@ function openConnect(host, placement = null, username = host.user) {
   syncConnectUser();
   const msg = document.querySelector('#connect-msg'); msg.textContent = ''; msg.className = 'form-msg';
   connectDialog.showModal();
-  setTimeout(() => pass.focus(), 0);
+  setTimeout(() => (username ? document.querySelector('#cc-auth-key').checked ? document.querySelector('#cc-private-key-display') : pass : document.querySelector('#cc-user')).focus(), 0);
 }
 function syncConnectUser() {
   const host=hosts.find(item=>item.name===connectHost);if(!host)return;
   const username=document.querySelector('#cc-user').value.trim(), changed=username!==host.user;
+  const retry = Boolean(connectPlacement?.retrySessionId);
+  const keyMode = document.querySelector('#cc-auth-key').checked;
+  const credential = keyMode ? '私钥' : '密码';
   const passwordStatus = document.querySelector('#cc-password-status');
-  const hasSavedPassword = !changed && Boolean(host.save_password);
+  const hasSavedPassword = !retry && !changed && (keyMode ? host.auth_type === 'private_key' && host.has_private_key : Boolean(host.save_password));
   passwordStatus.hidden = false;
   passwordStatus.classList.toggle('is-saved', hasSavedPassword);
-  passwordStatus.title = hasSavedPassword ? '已保存密码，留空自动使用' : '未保存密码';
-  passwordStatus.setAttribute('aria-label', hasSavedPassword ? '已保存密码' : '未保存密码');
+  passwordStatus.title = retry ? `本次重试需重新提供${credential}` : hasSavedPassword ? `已保存${credential}，留空自动使用` : `未保存${credential}`;
+  passwordStatus.setAttribute('aria-label', passwordStatus.title);
   document.querySelector('#cc-password-unsaved').toggleAttribute('hidden', hasSavedPassword);
   document.querySelector('#cc-addr').textContent = `${username || '…'}@${host.hostname}:${host.port}`;
-  document.querySelector('#cc-auth').textContent = authLabel(changed ? 'password' : host.auth_type);
-  const pass=document.querySelector('#cc-pass');pass.required=changed;pass.placeholder=hasSavedPassword?'留空使用已保存密码':changed?'输入该用户的密码':'输入密码';
+  document.querySelector('#cc-auth').textContent = authLabel(keyMode ? 'private_key' : 'password');
+  document.querySelector('#cc-password-row').hidden = keyMode; document.querySelector('#cc-key-row').hidden = !keyMode;
+  const pass=document.querySelector('#cc-pass'); pass.disabled=keyMode; pass.required=!keyMode&&!hasSavedPassword; pass.placeholder=hasSavedPassword?'留空使用已保存密码':changed?'输入该用户的密码':'输入密码';
+  const key=document.querySelector('#cc-private-key'); key.disabled=!keyMode; key.placeholder=hasSavedPassword?'留空使用已保存私钥':'选择文件或粘贴私钥';
+  const keyDisplay=document.querySelector('#cc-private-key-display'); keyDisplay.disabled=!keyMode; keyDisplay.required=keyMode&&!hasSavedPassword;
+}
+
+function retryTerminalCredentials(session, authenticationFailed = false) {
+  const host = hosts.find(item => item.name === session.host);
+  if (!host || screenLocked || document.querySelector('dialog[open]') || !sessions.has(session.id)) return;
+  activateSession(session.id);
+  openConnect(host, {retrySessionId:session.id}, session.user, session.authType);
+  document.querySelector('#connect-msg').textContent = authenticationFailed ? 'SSH 凭证验证失败，请重新提供密码或私钥。本次重试不会修改已保存的凭据。' : '请提供本次连接的密码或私钥，将在原标签页重新连接。';
+}
+function reconnectTerminal(session) {
+  if (!session || !['error','closed'].includes(session.state) || screenLocked) return;
+  const host = hosts.find(item => item.name === session.host); if (!host) return;
+  if (!session.authenticationFailed && canReuseSavedAuth(session, host)) connectTerminal(session, '', {authType:session.authType});
+  else retryTerminalCredentials(session, session.authenticationFailed);
+}
+function canReuseSavedAuth(session, host) {
+  return session.user === host.user && (session.authType === 'private_key' ? host.auth_type === 'private_key' && host.has_private_key : host.save_password);
 }
 document.querySelector('#cc-user').addEventListener('input',()=>{document.querySelector('#cc-pass').value='';syncConnectUser();});
+for (const radio of document.querySelectorAll('input[name="connect_auth_type"]')) radio.addEventListener('change', () => {
+  document.querySelector('#cc-pass').value = '';
+  const key = document.querySelector('#cc-private-key'); key.value = ''; key.dispatchEvent(new Event('input', {bubbles:true}));
+  syncConnectUser();
+});
 document.querySelector('#connect-form').onsubmit = event => {
   event.preventDefault();
+  const key = document.querySelector('#cc-private-key');
+  if (document.querySelector('#cc-private-key-display').required && !key.value.trim()) { document.querySelector('#connect-msg').textContent = '请选择私钥文件或粘贴私钥内容。'; return; }
+  if (key.dataset.fileLoading) { document.querySelector('#connect-msg').textContent = '正在读取私钥文件，请稍候再连接。'; return; }
   const pass = document.querySelector('#cc-pass');
-  const password = pass.value; pass.value = '';
+  const keyMode = document.querySelector('#cc-auth-key').checked;
+  const password = keyMode ? '' : pass.value; pass.value = '';
+  const credentials = {authType:keyMode?'private_key':'password', privateKey:keyMode?key.value:''}; key.value = '';
   const username=document.querySelector('#cc-user').value.trim();
+  const placement = connectPlacement; connectPlacement = null;
   connectDialog.close();
-  openTerminal(connectHost, password, connectPlacement, username); connectPlacement = null;
+  if (placement?.retrySessionId) {
+    const session = sessions.get(placement.retrySessionId);
+    if (session && ['error','closed'].includes(session.state)) { session.user = username; connectTerminal(session, password, credentials); }
+  } else openTerminal(connectHost, password, placement, username, credentials);
 };
 
 /* ---------------- 终端会话 ---------------- */
+let draggedTabId = '';
+function finishTabDrag() {
+  workspaceTabs.get(draggedTabId)?.tab.classList.remove('dragging');
+  draggedTabId = '';
+}
+tabstrip.addEventListener('dragover', event => {
+  const group = workspaceTabs.get(draggedTabId);
+  if (!group || screenLocked || appEl.hidden) return;
+  event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+  const next = [...tabstrip.children].find(tab => tab !== group.tab && event.clientX < tab.getBoundingClientRect().left + tab.offsetWidth / 2) || null;
+  if (group.tab.nextElementSibling !== next) {
+    tabstrip.insertBefore(group.tab, next);
+    const ordered = [...tabstrip.children].map(tab => workspaceTabs.get(tab.id));
+    workspaceTabs.clear();
+    for (const item of ordered) workspaceTabs.set(item.id, item);
+  }
+  const bounds = tabstrip.getBoundingClientRect();
+  if (event.clientX < bounds.left + 24) tabstrip.scrollLeft -= 16;
+  else if (event.clientX > bounds.right - 24) tabstrip.scrollLeft += 16;
+});
+tabstrip.addEventListener('drop', event => { if (draggedTabId) { event.preventDefault(); finishTabDrag(); } });
 function updateWorkspace() { emptyState.hidden = Boolean(workspaceTabs.get(activeTabId)?.sessionIds.size); }
 function createWorkspaceTab(label = '主页') {
   const id = `tab-${nextTabId++}`, tab = document.createElement('div');
   tab.className = 'tab'; tab.setAttribute('role', 'tab'); tab.tabIndex = -1; tab.id = id;tab.setAttribute('aria-controls','empty-state');
   tab.innerHTML = `<span class="tab-state"></span><span class="tab-label">${escapeHtml(label)}</span><button class="tab-close" type="button" title="关闭 ${escapeHtml(label)}" aria-label="关闭 ${escapeHtml(label)}">✕</button>`;
   const group = {id, tab, root:null, sessionIds:new Set(), focused:''}; workspaceTabs.set(id, group); tabstrip.append(tab);
+  tab.draggable = true;
+  tab.addEventListener('pointerdown', event => { tab.draggable = event.button === 0 && !event.target.closest('.tab-close'); });
+  tab.addEventListener('dragstart', event => {
+    if (screenLocked || !currentUser || !tab.draggable) { event.preventDefault(); return; }
+    closeTabMenu(); closeTerminalMenu(); closeHostMenu();
+    draggedTabId = id; tab.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-xsh-tab', id);
+    activateWorkspaceTab(id);
+  });
+  tab.addEventListener('dragend', finishTabDrag);
   tab.onclick = event => { if (!event.target.closest('.tab-close')) activateWorkspaceTab(id); };
   tab.onauxclick = event => { if (event.button === 1) {event.preventDefault();closeWorkspaceTab(id);} };
   tab.onkeydown = event => {
@@ -522,18 +753,21 @@ function activateSession(id) {
 const tabMenu=document.querySelector('#tab-context-menu');let contextTabId='';
 function closeTabMenu() {tabMenu.hidden=true;contextTabId='';}
 function openTabMenu(id,x,y) {
+  closeHostMenu();
   closeTerminalMenu();
   const group=workspaceTabs.get(id);if(!group||screenLocked)return;
   contextTabId=id;tabMenu.hidden=false;
   for(const button of tabMenu.querySelectorAll('[data-tab-action]')) button.disabled = ['vertical','horizontal'].includes(button.dataset.tabAction) && !group.sessionIds.size;
+  tabMenu.querySelector('[data-tab-action="reconnect"]').disabled = !['error','closed'].includes(sessions.get(group.focused)?.state);
   const rect=tabMenu.getBoundingClientRect();tabMenu.style.left=`${Math.max(8,Math.min(x,innerWidth-rect.width-8))}px`;tabMenu.style.top=`${Math.max(8,Math.min(y,innerHeight-rect.height-8))}px`;
   tabMenu.querySelector('button').focus();
 }
 document.querySelector('#btn-new-tab').addEventListener('click',newHomeTab);
 tabMenu.addEventListener('click',event=>{
-  const action=event.target.closest('[data-tab-action]')?.dataset.tabAction,group=workspaceTabs.get(contextTabId);if(!action||!group)return;
+  const button=event.target.closest('[data-tab-action]'), action=button?.dataset.tabAction,group=workspaceTabs.get(contextTabId);if(!action||!group||button.disabled||screenLocked)return;
   const id=group.id;closeTabMenu();
   if(action==='new')newHomeTab();
+  else if(action==='reconnect')reconnectTerminal(sessions.get(group.focused));
   else if(action==='close')closeWorkspaceTab(id);
   else if(action==='close-others') {for(const other of [...workspaceTabs.keys()])if(other!==id)closeWorkspaceTab(other);activateWorkspaceTab(id);}
   else if(action==='close-all') {for(const other of [...workspaceTabs.keys()])closeWorkspaceTab(other);}
@@ -541,7 +775,7 @@ tabMenu.addEventListener('click',event=>{
     const session=sessions.get(group.focused);if(!session) {if(action==='duplicate')newHomeTab();return;}
     const host=hosts.find(item=>item.name===session.host);if(!host)return;
     const placement=action==='duplicate'?{newTab:true}:{sessionId:session.id,direction:action};
-    if(session.user===host.user&&(host.save_password||host.auth_type==='private_key'))openTerminal(host.name,'',placement,session.user);else openConnect(host,placement,session.user);
+    if(canReuseSavedAuth(session,host))openTerminal(host.name,'',placement,session.user,{authType:session.authType});else openConnect(host,placement,session.user,session.authType);
   }
 });
 tabMenu.addEventListener('keydown',event=>{
@@ -559,7 +793,7 @@ let contextTerminalId='', contextTerminalSelection='';
 function closeTerminalMenu() {terminalMenu.hidden=true;contextTerminalId='';contextTerminalSelection='';}
 function openTerminalMenu(session,event) {
   if(screenLocked||!sessions.has(session.id))return;
-  event.preventDefault();event.stopPropagation();closeTabMenu();
+  event.preventDefault();event.stopPropagation();closeTabMenu();closeHostMenu();
   const selection=session.terminal.getSelection();activateSession(session.id);
   contextTerminalId=session.id;contextTerminalSelection=selection;terminalMenuMessage.hidden=true;terminalMenu.hidden=false;
   for(const button of terminalMenu.querySelectorAll('[data-terminal-action]')) {
@@ -584,7 +818,7 @@ terminalMenu.addEventListener('click',async event=>{
     } else if(action==='select-all')session.terminal.selectAll();
     else if(action==='clear')session.terminal.clear();
     else if(action==='close')closeSession(session.id);
-    else {const host=hosts.find(item=>item.name===session.host);if(!host)return;const placement={sessionId:session.id,direction:action};if(session.user===host.user&&(host.save_password||host.auth_type==='private_key'))openTerminal(host.name,'',placement,session.user);else openConnect(host,placement,session.user);}
+    else {const host=hosts.find(item=>item.name===session.host);if(!host)return;const placement={sessionId:session.id,direction:action};if(canReuseSavedAuth(session,host))openTerminal(host.name,'',placement,session.user,{authType:session.authType});else openConnect(host,placement,session.user,session.authType);}
     closeTerminalMenu();if(sessions.has(session.id)&&activeSessionId===session.id)session.terminal.focus();
   }catch(error){if(contextTerminalId===session.id&&!screenLocked){terminalMenuMessage.textContent=error.message;terminalMenuMessage.hidden=false;const bounds=terminalMenu.getBoundingClientRect();terminalMenu.style.top=`${Math.max(8,Math.min(bounds.top,innerHeight-bounds.height-8))}px`;}}
 });
@@ -594,7 +828,7 @@ terminalMenu.addEventListener('keydown',event=>{
 });
 document.addEventListener('pointerdown',event=>{if(!terminalMenu.contains(event.target))closeTerminalMenu();});
 window.addEventListener('resize',closeTerminalMenu);
-function openTerminal(host, password, placement = null, username = hosts.find(item=>item.name===host)?.user || '') {
+function openTerminal(host, password, placement = null, username = hosts.find(item=>item.name===host)?.user || '', credentials = {}) {
   const id = `terminal-${nextSessionId++}`;
   const source = placement?.sessionId && sessions.get(placement.sessionId);
   let group = source ? workspaceTabs.get(source.tabId) : !placement && !workspaceTabs.get(activeTabId)?.sessionIds.size ? workspaceTabs.get(activeTabId) : null;
@@ -622,25 +856,40 @@ function openTerminal(host, password, placement = null, username = hosts.find(it
   paneClose.addEventListener('pointerdown', event => event.stopPropagation());
   paneClose.addEventListener('click', event => { event.stopPropagation(); closeSession(id); });
   pane.append(paneClose);
-  const session = { id, host, user:username, tabId:group.id, tab, pane, terminal, fitAddon, socket: null, resizeObserver: null, state: 'connecting', auth: { password } };
+  const session = { id, host, user:username, tabId:group.id, tab, pane, terminal, fitAddon, socket: null, resizeObserver: null, state: 'connecting' };
   group.sessionIds.add(id); sessions.set(id, session); updateWorkspace();
   pane.addEventListener('pointerdown',()=>{if(activeSessionId!==id)activateSession(id);});
   pane.addEventListener('focusin',()=>{if(activeSessionId!==id)activateSession(id);});
   pane.addEventListener('contextmenu',event=>openTerminalMenu(session,event),true);
   session.resizeObserver = new ResizeObserver(() => { if (activeTabId === group.id) { try { fitAddon.fit(); } catch (_) {} } });
   session.resizeObserver.observe(pane);
+  terminal.onData(data => sendTerminal(session, { type: 'input', data }));
+  terminal.onResize(size => sendTerminal(session, { type: 'resize', cols: size.cols, rows: size.rows }));
+  connectTerminal(session, password, credentials);
+}
+function connectTerminal(session, password, credentials = {}) {
+  if (screenLocked || sessions.get(session.id) !== session) return;
+  const {id, host, terminal} = session;
+  const authType = credentials.authType || '';
+  let privateKey = credentials.privateKey || ''; credentials.privateKey = '';
+  session.authType = authType || (hosts.find(item=>item.name===host)?.auth_type === 'private_key' ? 'private_key' : 'password');
+  const previous = session.socket; session.socket = null;
+  if (previous) previous.close();
+  session.uploadSession = ''; session.authenticationFailed = false;
+  setSessionState(session, 'connecting', '连接中');
   activateSession(id);
-  terminal.writeln('\x1b[38;5;108mxsh\x1b[0m connecting…');
+  terminal.writeln('\r\n\x1b[38;5;108mxsh\x1b[0m connecting…');
   const socketURL = new URL(`ws/terminal?token=${encodeURIComponent(token)}`, location.href);
   socketURL.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  session.socket = new WebSocket(socketURL);
-  session.socket.onopen = () => {
-    const auth = session.auth; session.auth = null;
-    sendTerminal(session, { type: 'connect', host, user:username, password: auth.password, cols: terminal.cols, rows: terminal.rows });
-    auth.password = ''; password = '';
+  const socket = new WebSocket(socketURL); session.socket = socket;
+  const current = () => sessions.get(id) === session && session.socket === socket;
+  socket.onopen = () => {
+    if (!current()) { password = ''; privateKey = ''; socket.close(); return; }
+    try { sendTerminal(session, { type: 'connect', host, user:session.user, password, auth_type:authType, private_key:privateKey, cols: terminal.cols, rows: terminal.rows }); }
+    finally { password = ''; privateKey = ''; }
   };
-  session.socket.onmessage = event => {
-    if (!sessions.has(id)) return;
+  socket.onmessage = event => {
+    if (!current()) return;
     const data = JSON.parse(event.data);
     if (data.type === 'output') terminal.write(data.data);
     if (data.type === 'connected') {
@@ -651,14 +900,16 @@ function openTerminal(host, password, placement = null, username = hosts.find(it
       const known = hosts.find(h => h.name === host);
       if (known) { known.last_login = Math.floor(Date.now() / 1000); renderRecent(); renderDrawer(); }
     }
-    if (data.type === 'error') { setSessionState(session, 'error', '连接失败'); terminal.writeln(`\r\n\x1b[91m${escapeHtml(data.message)}\x1b[0m`); }
+    if (data.type === 'error') {
+      session.authenticationFailed = data.code === 'authentication_failed';
+      setSessionState(session, 'error', '连接失败'); terminal.writeln(`\r\n\x1b[91m${escapeHtml(data.message)}\x1b[0m`);
+      if (session.authenticationFailed) retryTerminalCredentials(session, true);
+    }
     if (data.type === 'closed') { setSessionState(session, 'closed', '已断开'); terminal.writeln(`\r\n\x1b[90m${escapeHtml(data.message)}\x1b[0m`); }
     if (data.type === 'trust') sendTerminal(session, { type: 'trust', trust: confirm(`首次连接 ${data.message}\n\n密钥类型：${data.key_type}\n指纹：${data.fingerprint}\n\n确认信任并保存该主机密钥？`) });
   };
-  session.socket.onerror = () => { if (sessions.has(id)) setSessionState(session, 'error', '连接出错'); };
-  session.socket.onclose = () => { if (sessions.has(id) && session.state === 'connected') setSessionState(session, 'closed', '已断开'); };
-  terminal.onData(data => sendTerminal(session, { type: 'input', data }));
-  terminal.onResize(size => sendTerminal(session, { type: 'resize', cols: size.cols, rows: size.rows }));
+  socket.onerror = () => { if (current()) setSessionState(session, 'error', '连接出错'); };
+  socket.onclose = () => { password = ''; privateKey = ''; if (current() && ['connected','connecting'].includes(session.state)) setSessionState(session, 'closed', '已断开'); };
 }
 function sendTerminal(session, message) { if (screenLocked && message.type === 'input') return; if (session.socket?.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify(message)); }
 function closeSession(id) {
@@ -693,7 +944,7 @@ function renderRecent() {
   if (!recent.length) return;
   recentChips.innerHTML = recent.map(h => `<button class="chip-host" data-n="${escapeHtml(h.name)}"><span class="dot off"></span>${escapeHtml(h.name)}</button>`).join('');
   recentChips.querySelectorAll('.chip-host').forEach(button => {
-    button.addEventListener('click', () => { const h = hosts.find(x => x.name === button.dataset.n); if (h) openConnect(h); });
+    button.addEventListener('click', () => { const h = hosts.find(x => x.name === button.dataset.n); if (h) connectToHost(h); });
   });
 }
 
@@ -739,11 +990,41 @@ function showScreenLock() {
   updateScreenLockInfo();
   if (!screenLockDialog.open) screenLockDialog.showModal();
   document.querySelector('#screen-unlock-password').focus();
+  checkLockedSession(true);
 }
 const securityIdleLock = document.querySelector('#security-idle-lock');
+const securityIdleMinutes = document.querySelector('#security-idle-minutes');
 const securityAwayLock = document.querySelector('#security-away-lock');
 let securitySettingsKey = '', lastSecurityActivity = Date.now(), lockNeedsSync = false, lockRequest = null, lastLockAttempt = 0;
-const securityIdleTimeout = 5 * 60 * 1000;
+const securityIdleOptions = [1, 5, 10, 15, 30, 60];
+function idleLockMinutes() {
+  const minutes = Number(securityIdleMinutes.value);
+  return securityIdleOptions.includes(minutes) ? minutes : 5;
+}
+let lockedSessionCheck = null, lastLockedSessionCheck = 0;
+const lockedSessionCheckInterval = 30 * 1000;
+function checkLockedSession(force = false) {
+  if (!currentUser || !screenLocked || lockedSessionCheck) return lockedSessionCheck;
+  if (!force && Date.now() - lastLockedSessionCheck < lockedSessionCheckInterval) return;
+  const generation = authGeneration;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  lastLockedSessionCheck = Date.now();
+  const request = (async () => {
+    try {
+      const response = await fetch('api/auth/status', {cache:'no-store', signal:controller.signal});
+      if (!response.ok) return;
+      const status = await response.json();
+      if (generation !== authGeneration || !screenLocked) return;
+      if (status.authenticated === false) await lockView(status);
+    } catch (_) {
+      // A network/server failure does not establish that the session expired.
+    } finally { clearTimeout(timeout); }
+  })();
+  lockedSessionCheck = request;
+  request.finally(() => { if (lockedSessionCheck === request) lockedSessionCheck = null; });
+  return request;
+}
 function loadSecuritySettings() {
   if (!currentUser) return;
   const key = `xsh-security:${new URL('.', location.href).pathname}:${currentUser.id}:${currentUser.username}`;
@@ -752,18 +1033,21 @@ function loadSecuritySettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(key)) || {}; } catch (_) {}
   securityIdleLock.checked = saved.idleLock !== false;
+  securityIdleMinutes.value = String(securityIdleOptions.includes(Number(saved.idleMinutes)) ? Number(saved.idleMinutes) : 5);
+  securityIdleMinutes.disabled = !securityIdleLock.checked;
   securityAwayLock.checked = saved.awayLock === true;
 }
 function saveSecuritySettings() {
+  securityIdleMinutes.disabled = !securityIdleLock.checked;
   if (!securitySettingsKey) return;
   const message = document.querySelector('#security-msg');
   try {
-    localStorage.setItem(securitySettingsKey, JSON.stringify({idleLock:securityIdleLock.checked, awayLock:securityAwayLock.checked}));
+    localStorage.setItem(securitySettingsKey, JSON.stringify({idleLock:securityIdleLock.checked, idleMinutes:idleLockMinutes(), awayLock:securityAwayLock.checked}));
     message.textContent = '';
   } catch (_) { message.textContent = '浏览器未允许保存，设置仅在本次页面中生效。'; }
   lastSecurityActivity = Date.now();
 }
-for (const input of [securityIdleLock, securityAwayLock]) input.addEventListener('change', saveSecuritySettings);
+for (const input of [securityIdleLock, securityIdleMinutes, securityAwayLock]) input.addEventListener('change', saveSecuritySettings);
 function lockWorkspace() {
   if (!currentUser || lockRequest) return lockRequest;
   const generation = authGeneration;
@@ -788,10 +1072,11 @@ function lockWorkspace() {
 function checkSecurityLock() {
   if (!currentUser) return;
   if (screenLocked) {
+    checkLockedSession();
     if (lockNeedsSync && Date.now() - lastLockAttempt >= 5000) lockWorkspace();
     return;
   }
-  if (securityIdleLock.checked && Date.now() - lastSecurityActivity >= securityIdleTimeout) lockWorkspace();
+  if (securityIdleLock.checked && Date.now() - lastSecurityActivity >= idleLockMinutes() * 60 * 1000) lockWorkspace();
 }
 function recordSecurityActivity(event) {
   if (!event.isTrusted || !currentUser || screenLocked) return;
@@ -802,12 +1087,17 @@ function recordSecurityActivity(event) {
 }
 for (const type of ['keydown','pointerdown','pointermove','wheel','touchstart']) window.addEventListener(type, recordSecurityActivity, {capture:true});
 document.addEventListener('visibilitychange', () => {
-  if (!currentUser || screenLocked) return;
+  if (!currentUser) return;
+  if (screenLocked) { if (!document.hidden) checkLockedSession(true); return; }
   if (document.hidden && securityAwayLock.checked) lockWorkspace();
   else checkSecurityLock();
 });
-window.addEventListener('focus', checkSecurityLock);
-window.addEventListener('pageshow', checkSecurityLock);
+function checkReturningWorkspace() {
+  checkSecurityLock();
+  if (screenLocked) checkLockedSession(true);
+}
+window.addEventListener('focus', checkReturningWorkspace);
+window.addEventListener('pageshow', checkReturningWorkspace);
 setInterval(checkSecurityLock, 1000);
 for (const id of ['btn-screen-lock','security-lock-now']) document.getElementById(id).addEventListener('click', lockWorkspace);
 screenLockDialog.addEventListener('cancel', event => event.preventDefault());
@@ -1077,13 +1367,15 @@ shareSearch.addEventListener('keydown', event => { if (event.key === 'Enter') ev
 sharePicker.addEventListener('keydown', event => { if (event.key === 'Escape' && !sharePanel.hidden) { event.preventDefault(); event.stopPropagation(); setSharePickerOpen(false); shareToggle.focus(); } });
 document.addEventListener('click', event => { if (!sharePicker.contains(event.target)) setSharePickerOpen(false); });
 shareDialog.addEventListener('close', () => { shareRevision++; selectedRecipients.clear(); shareRecipients = []; setSharePickerOpen(false); });
-document.querySelector('#btn-share-host').addEventListener('click', async () => {
-  sharingHost = editingOriginal; hostDialog.close(); document.querySelector('#share-form').reset();
+async function openShare(hostName) {
+  if (screenLocked || !currentUser) return;
+  sharingHost = hostName; closeDrawer(); if (hostDialog.open) hostDialog.close(); document.querySelector('#share-form').reset();
   const revision = ++shareRevision; selectedRecipients.clear(); shareRecipients = []; shareSending = false; updateShareSelection(); setSharePickerOpen(false); shareToggle.disabled = true;
   document.querySelector('#share-target').textContent = sharingHost; document.querySelector('#share-msg').textContent = ''; shareDialog.showModal();
   try { const items = await accountRequest('api/share-recipients'); if (revision !== shareRevision || !shareDialog.open) return; shareRecipients = items; renderShareRecipients(); shareToggle.disabled = false; }
   catch (error) { if (revision === shareRevision && error.name !== 'AbortError') document.querySelector('#share-msg').textContent = error.message; }
-});
+}
+document.querySelector('#btn-share-host').addEventListener('click', () => openShare(editingOriginal));
 document.querySelector('#share-form').addEventListener('submit', async event => {
   event.preventDefault(); if (shareSending || !selectedRecipients.size) return;
   const revision = shareRevision; shareSending = true; updateShareSelection(); document.querySelector('#share-msg').textContent = '';
@@ -1102,7 +1394,7 @@ async function loadInbox() {
     const detail = document.createElement('span'); detail.className = 'hint'; detail.textContent = `${item.config.hostname}:${item.config.port} · 来自 ${item.sender}`;
     text.append(title, detail);
     const accept = document.createElement('button'); accept.type = 'button'; accept.className = 'btn btn-primary'; accept.textContent = '添加';
-    accept.onclick = () => { inboxDialog.close(); openHostModal({...item.config,user:'',auth_type:'auto',save_password:false},item.id); };
+    accept.onclick = () => { inboxDialog.close(); openHostModal({...item.config,user:'',auth_type:'password',save_password:false},item.id); };
     const reject = document.createElement('button'); reject.type = 'button'; reject.className = 'btn btn-subtle'; reject.textContent = '忽略';
     reject.onclick = async () => { try { await accountRequest('api/shares','DELETE',{id:item.id}); await loadInbox(); } catch(error) { document.querySelector('#inbox-msg').textContent = error.message; } };
     row.append(text,accept,reject); list.append(row);

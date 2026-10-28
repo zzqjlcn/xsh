@@ -285,7 +285,7 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 		err = webstore.DeleteHost(session.User.ID, input.Original)
 	} else {
 		if input.Host.IdentityFile != "" {
-			http.Error(w, "Web 私钥需粘贴内容，不能使用服务端文件路径。", 400)
+			http.Error(w, "请选择本地私钥文件或粘贴内容，不能使用服务端文件路径。", 400)
 			return
 		}
 		if r.Method == "PUT" {

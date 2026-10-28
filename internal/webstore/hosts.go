@@ -173,10 +173,10 @@ func saveHost(tx *sql.Tx, userID int64, key []byte, host config.SSHHost, input S
 	if host.AuthType != config.AuthPrivateKey {
 		secret.PrivateKey = ""
 	}
-	if host.AuthType == config.AuthPassword && secret.Password == "" {
-		return errors.New("请输入要保存的主机密码")
-	}
 	if host.AuthType == config.AuthPrivateKey {
+		if len(secret.PrivateKey) > 64<<10 {
+			return errors.New("私钥文件不能超过 64 KB")
+		}
 		if secret.PrivateKey == "" {
 			return errors.New("请输入私钥内容")
 		}

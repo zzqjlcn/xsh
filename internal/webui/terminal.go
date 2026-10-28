@@ -27,18 +27,21 @@ import (
 )
 
 type terminalMessage struct {
-	Type        string `json:"type"`
-	Host        string `json:"host,omitempty"`
-	User        string `json:"user,omitempty"`
-	Password    string `json:"password,omitempty"`
-	Data        string `json:"data,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
-	KeyType     string `json:"key_type,omitempty"`
-	Cols        int    `json:"cols,omitempty"`
-	Rows        int    `json:"rows,omitempty"`
-	Trust       bool   `json:"trust,omitempty"`
-	Session     string `json:"session,omitempty"`
+	Type        string          `json:"type"`
+	Code        string          `json:"code,omitempty"`
+	Host        string          `json:"host,omitempty"`
+	User        string          `json:"user,omitempty"`
+	Password    string          `json:"password,omitempty"`
+	AuthType    config.AuthType `json:"auth_type,omitempty"`
+	PrivateKey  string          `json:"private_key,omitempty"`
+	Data        string          `json:"data,omitempty"`
+	Message     string          `json:"message,omitempty"`
+	Fingerprint string          `json:"fingerprint,omitempty"`
+	KeyType     string          `json:"key_type,omitempty"`
+	Cols        int             `json:"cols,omitempty"`
+	Rows        int             `json:"rows,omitempty"`
+	Trust       bool            `json:"trust,omitempty"`
+	Session     string          `json:"session,omitempty"`
 }
 
 type socketWriter struct {
@@ -104,10 +107,14 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	password := start.Password
-	if err := applyTerminalUser(host, start.User, password); err != nil {
-		writer.send(terminalMessage{Type: "error", Message: err.Error()})
+	if err := applyTerminalCredentials(host, start); err != nil {
+		writer.send(terminalMessage{Type: "error", Code: "authentication_failed", Message: err.Error()})
 		return
 	}
+	temporaryKey := []byte(start.PrivateKey)
+	start.PrivateKey = ""
+	start.Password = ""
+	defer func() { clear(temporaryKey) }()
 	if password == "" && host.SavePassword {
 		secret, readErr := webstore.ReadSecret(actor.User.ID, actor.Key, host.Name)
 		if readErr != nil {
@@ -128,6 +135,9 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return secret.Password, err
 	}
 	keys := func(name string) ([]byte, error) {
+		if name == host.Name && len(temporaryKey) > 0 {
+			return temporaryKey, nil
+		}
 		secret, err := webstore.ReadSecret(actor.User.ID, actor.Key, name)
 		return []byte(secret.PrivateKey), err
 	}
@@ -137,8 +147,11 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	connection, err := sshclient.DialWithPrivateKeys(*host, password, resolve, passwordResolver, callback, keys)
+	clear(temporaryKey)
+	temporaryKey = nil
+	password = ""
 	if err != nil {
-		writer.send(terminalMessage{Type: "error", Message: err.Error()})
+		writer.send(terminalMessage{Type: "error", Code: terminalDialErrorCode(err), Message: err.Error()})
 		return
 	}
 	defer connection.Close()
@@ -233,16 +246,85 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func terminalDialErrorCode(err error) string {
+	if err == nil || strings.HasPrefix(err.Error(), "ProxyJump ") {
+		return ""
+	}
+	if strings.Contains(err.Error(), "ssh: unable to authenticate") || err.Error() == "no usable authentication method configured" {
+		return "authentication_failed"
+	}
+	return ""
+}
+
+func applyTerminalCredentials(host *config.SSHHost, input terminalMessage) error {
+	if input.AuthType == "" {
+		if input.PrivateKey != "" {
+			return errors.New("使用私钥时请选择私钥认证")
+		}
+		return applyTerminalUser(host, input.User, input.Password)
+	}
+	if input.AuthType != config.AuthPassword && input.AuthType != config.AuthPrivateKey {
+		return errors.New("请选择密码或私钥认证")
+	}
+	username := strings.TrimSpace(input.User)
+	if username == "" {
+		username = host.User
+	}
+	if username == "" || len(username) > 256 || strings.ContainsAny(username, " \t\r\n\x00") {
+		return errors.New("SSH 用户名格式无效")
+	}
+	changed := username != host.User
+	if input.AuthType == config.AuthPrivateKey {
+		if input.Password != "" {
+			return errors.New("私钥认证不能同时提交密码")
+		}
+		if input.PrivateKey == "" && (changed || host.AuthType != config.AuthPrivateKey) {
+			return errors.New("请选择私钥文件或粘贴私钥内容")
+		}
+		if input.PrivateKey != "" {
+			if len(input.PrivateKey) > 64<<10 {
+				return errors.New("私钥文件不能超过 64 KB")
+			}
+			if _, err := ssh.ParsePrivateKey([]byte(input.PrivateKey)); err != nil {
+				return errors.New("私钥格式无效，暂不支持带口令的私钥")
+			}
+		}
+		host.SavePassword = false
+	} else {
+		if input.PrivateKey != "" {
+			return errors.New("密码认证不能同时提交私钥")
+		}
+		if changed && input.Password == "" {
+			return errors.New("使用其他用户登录时，请填写该用户的密码")
+		}
+		if changed {
+			host.SavePassword = false
+		}
+	}
+	host.User = username
+	host.AuthType = input.AuthType
+	host.IdentityFile = ""
+	return nil
+}
+
 // A temporary login never borrows the configured user's password or private key.
 func applyTerminalUser(host *config.SSHHost, username, password string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
+		if password != "" {
+			host.AuthType = config.AuthPassword
+			host.IdentityFile = ""
+		}
 		return nil
 	}
 	if len(username) > 256 || strings.ContainsAny(username, " \t\r\n\x00") {
 		return errors.New("SSH 用户名格式无效")
 	}
 	if username == host.User {
+		if password != "" {
+			host.AuthType = config.AuthPassword
+			host.IdentityFile = ""
+		}
 		return nil
 	}
 	if password == "" {

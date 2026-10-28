@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -320,7 +321,7 @@ func startTestSSHServerForUser(t *testing.T, expectedUser string) (string, func(
 	return startTestSSHServerWithWorkingDirectory(t, expectedUser, nil)
 }
 
-func startTestSSHServerWithWorkingDirectory(t *testing.T, expectedUser string, cwd func() string) (string, func()) {
+func startTestSSHServerWithWorkingDirectory(t *testing.T, expectedUser string, cwd func() string, publicKeys ...ssh.PublicKey) (string, func()) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -337,15 +338,20 @@ func startTestSSHServerWithWorkingDirectory(t *testing.T, expectedUser string, c
 		return nil, nil
 	}}
 	serverConfig.AddHostKey(signer)
+	if len(publicKeys) > 0 {
+		serverConfig.PublicKeyCallback = func(metadata ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if metadata.User() != expectedUser || !bytes.Equal(key.Marshal(), publicKeys[0].Marshal()) {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return nil, nil
+		}
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		connection, err := listener.Accept()
-		if err != nil {
-			return
-		}
+	handle := func(connection net.Conn) {
+		defer connection.Close()
 		_, channels, requests, err := ssh.NewServerConn(connection, serverConfig)
 		if err != nil {
 			return
@@ -419,6 +425,15 @@ func startTestSSHServerWithWorkingDirectory(t *testing.T, expectedUser string, c
 					}
 				}
 			}()
+		}
+	}
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go handle(connection)
 		}
 	}()
 	return listener.Addr().String(), func() { _ = listener.Close() }

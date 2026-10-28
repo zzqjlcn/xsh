@@ -38,6 +38,10 @@ func TestTemporaryTerminalUserCredentials(t *testing.T) {
 		if err := applyTerminalUser(&host, name, ""); err != nil || !reflect.DeepEqual(host, original) {
 			t.Fatal("default login changed")
 		}
+		host = original
+		if err := applyTerminalUser(&host, name, "retry-password"); err != nil || host.AuthType != config.AuthPassword || host.IdentityFile != "" || host.User != original.User {
+			t.Fatalf("explicit password did not override private key: %+v, %v", host, err)
+		}
 	}
 }
 

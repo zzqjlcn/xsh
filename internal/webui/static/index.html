@@ -57,7 +57,7 @@
     </a>
 
     <div class="tabbar">
-    <div id="tabstrip" role="tablist" aria-label="SSH 终端会话"></div>
+    <div id="tabstrip" role="tablist" aria-label="SSH 终端会话" aria-keyshortcuts="Control+Tab Control+Shift+Tab Alt+PageDown Alt+PageUp" title="切换标签页：Ctrl+Tab / Ctrl+Shift+Tab；浏览器内可使用 Alt+PageDown / Alt+PageUp"></div>
     <button class="icon-btn" id="btn-new-tab" type="button" title="新建选项卡" aria-label="新建选项卡"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
     </div>
 
@@ -104,6 +104,7 @@
 <div id="tab-context-menu" class="tab-context-menu" role="menu" aria-label="选项卡操作" hidden>
   <button type="button" role="menuitem" data-tab-action="new">新建</button>
   <button type="button" role="menuitem" data-tab-action="duplicate">复制</button>
+  <button type="button" role="menuitem" data-tab-action="reconnect">重新连接</button>
   <div role="separator"></div>
   <button type="button" role="menuitem" data-tab-action="close">关闭</button>
   <button type="button" role="menuitem" data-tab-action="close-others">关闭其他</button>
@@ -127,6 +128,14 @@
   <p id="terminal-menu-message" class="terminal-menu-message" role="status" hidden></p>
 </div>
 <div class="backdrop" id="drawer-backdrop" hidden></div>
+<div id="host-context-menu" class="tab-context-menu" role="menu" aria-label="主机操作" hidden>
+  <button type="button" role="menuitem" data-host-action="connect">连接</button>
+  <button type="button" role="menuitem" data-host-action="other-user">更换账号登陆</button>
+  <div role="separator"></div>
+  <button type="button" role="menuitem" data-host-action="edit">编辑</button>
+  <button type="button" role="menuitem" data-host-action="share">分享</button>
+  <button type="button" role="menuitem" data-host-action="delete">删除</button>
+</div>
 <aside class="drawer" id="host-drawer" aria-hidden="true" aria-label="主机列表">
   <div class="drawer-head">
     <div>
@@ -194,26 +203,36 @@
           <div class="field wide">
             <span class="field-label">认证方式</span>
             <div class="seg" role="radiogroup" aria-label="认证方式">
-              <input type="radio" name="auth_type" id="auth-auto" value="auto" checked><label for="auth-auto">自动</label>
-              <input type="radio" name="auth_type" id="auth-pass" value="password"><label for="auth-pass">密码</label>
+              <input type="radio" name="auth_type" id="auth-pass" value="password" checked><label for="auth-pass">密码</label>
               <input type="radio" name="auth_type" id="auth-key" value="private_key"><label for="auth-key">私钥</label>
             </div>
           </div>
           <div class="field wide" id="row-key" hidden>
-            <label for="f-key">私钥内容</label>
-            <textarea class="input private-key-input" id="f-key" name="private_key" rows="5" placeholder="粘贴私钥内容" autocomplete="off" spellcheck="false"></textarea>
+            <label for="f-key-display">私钥内容</label>
+            <div class="private-key-editor">
+              <textarea id="f-key" name="private_key" hidden></textarea>
+              <span class="private-key-source" hidden aria-hidden="true"><svg data-source-file viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H5v20h14V7l-5-5Z"/><path d="M14 2v6h5M8 13h8m-8 4h6"/></svg><svg data-source-paste viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-3-11-2 14"/></svg></span>
+              <input class="input private-key-input" id="f-key-display" type="text" readonly placeholder="选择文件或粘贴私钥" autocomplete="off" spellcheck="false">
+              <div class="private-key-actions">
+                <button class="private-key-action" type="button" data-key-clear="f-key" hidden title="清除私钥" aria-label="清除私钥"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+                <button class="private-key-action" type="button" data-key-view="f-key" hidden title="查看完整私钥" aria-label="查看完整私钥"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+                <button class="private-key-action" type="button" data-key-file="f-key-file" title="选择私钥文件" aria-label="选择私钥文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-4 4 4-4 4 4M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg></button>
+                <button class="private-key-action" type="button" data-key-paste="f-key" title="粘贴私钥" aria-label="粘贴私钥"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M8 5H5v16h14V5h-3M9 12h6m-6 4h6"/></svg></button>
+              </div>
+            </div>
+            <input id="f-key-file" type="file" hidden aria-label="选择主机私钥文件">
             <p class="hint">私钥在当前账号下加密保存。编辑时留空可保留已有私钥。</p>
           </div>
-          <div class="field wide password-save" id="row-passhint" hidden>
+          <div class="field wide password-save" id="row-passhint">
             <label for="f-password">主机密码</label>
             <div class="password-wrap host-password-wrap">
-              <input class="input" id="f-password" name="password" type="password" autocomplete="new-password" placeholder="输入要保存的主机密码" disabled>
+              <input class="input" id="f-password" name="password" type="password" autocomplete="new-password" placeholder="留空则在连接时输入">
               <button type="button" class="password-action host-password-test" id="btn-test-password" title="测试密码连接" aria-label="测试密码连接"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v4m6-4v4M5 7h10v3a5 5 0 0 1-10 0V7Zm5 8v5m5-2 2 2 4-4"/></svg></button>
               <button type="button" class="eye" data-eye="f-password" aria-label="显示/隐藏密码">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
               </button>
             </div>
-            <p class="hint">密码在当前账号下加密保存。</p>
+            <p class="hint">填写后加密保存；新建时留空则在连接时输入，编辑时留空保留已保存的密码。</p>
             <p class="hint" id="host-test-result" role="status" hidden></p>
           </div>
           <div class="field">
@@ -275,7 +294,8 @@
           <label for="cc-user">用户名</label>
           <input class="input" id="cc-user" autocomplete="username" required maxlength="256" placeholder="SSH 用户名">
         </div>
-        <div class="field">
+        <div class="field"><span class="field-label">认证方式</span><div class="seg" role="radiogroup" aria-label="连接认证方式"><input type="radio" name="connect_auth_type" id="cc-auth-password" value="password" checked><label for="cc-auth-password">密码</label><input type="radio" name="connect_auth_type" id="cc-auth-key" value="private_key"><label for="cc-auth-key">私钥</label></div></div>
+        <div class="field" id="cc-password-row">
           <label for="cc-pass">主机密码</label>
           <div class="password-wrap">
             <input class="input" id="cc-pass" type="password" autocomplete="current-password" placeholder="输入密码">
@@ -283,6 +303,21 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>
             </button>
           </div>
+        </div>
+        <div class="field" id="cc-key-row" hidden>
+          <label for="cc-private-key-display">私钥内容</label>
+          <div class="private-key-editor">
+            <textarea id="cc-private-key" hidden disabled></textarea>
+              <span class="private-key-source" hidden aria-hidden="true"><svg data-source-file viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H5v20h14V7l-5-5Z"/><path d="M14 2v6h5M8 13h8m-8 4h6"/></svg><svg data-source-paste viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-3-11-2 14"/></svg></span>
+              <input class="input private-key-input" id="cc-private-key-display" type="text" readonly placeholder="选择文件或粘贴私钥" autocomplete="off" spellcheck="false" disabled>
+            <div class="private-key-actions">
+              <button class="private-key-action" type="button" data-key-clear="cc-private-key" hidden title="清除私钥" aria-label="清除私钥"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+              <button class="private-key-action" type="button" data-key-view="cc-private-key" hidden title="查看完整私钥" aria-label="查看完整私钥"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+                <button class="private-key-action" type="button" data-key-file="cc-key-file" title="选择私钥文件" aria-label="选择私钥文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-4 4 4-4 4 4M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg></button>
+              <button class="private-key-action" type="button" data-key-paste="cc-private-key" title="粘贴私钥" aria-label="粘贴私钥"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M8 5H5v16h14V5h-3M9 12h6m-6 4h6"/></svg></button>
+            </div>
+          </div>
+          <input id="cc-key-file" type="file" hidden aria-label="选择本次连接的私钥文件">
         </div>
         <p class="form-msg" id="connect-msg"></p>
       </div>
@@ -292,6 +327,14 @@
         <button class="btn btn-primary" type="submit">连接</button>
       </div>
     </form>
+  </div>
+</dialog>
+
+<dialog id="dlg-key-view" aria-labelledby="key-view-title">
+  <div class="dlg">
+    <div class="dlg-head"><h2 id="key-view-title">私钥内容</h2><button class="icon-btn" type="button" data-close="dlg-key-view" aria-label="关闭私钥内容">×</button></div>
+    <div class="dlg-body"><pre id="key-view-content" tabindex="0"></pre></div>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn btn-subtle" type="button" data-close="dlg-key-view">关闭</button></div>
   </div>
 </dialog>
 
@@ -312,6 +355,7 @@
         <p class="hint">将从主机列表中移除以下配置，并删除其已保存的凭据。</p>
         <span class="target" id="confirm-target"></span>
       </div>
+      <p class="form-msg" id="confirm-msg" role="alert"></p>
     </div>
     <div class="dlg-foot">
       <span class="spacer"></span>
@@ -420,7 +464,7 @@
       <section class="settings-panel" data-settings-panel="security" hidden>
         <header class="settings-heading"><div><h2>安全</h2><p>保护暂时离开的工作区</p></div></header>
         <div class="security-options">
-          <label class="security-option" for="security-idle-lock"><span><strong>5 分钟未操作，自动锁屏</strong><small>键盘、鼠标或触摸操作会重新计时，终端输出不会延长时间。</small></span><input id="security-idle-lock" type="checkbox" role="switch" checked></label>
+          <div class="security-option"><span><label for="security-idle-lock"><strong>未操作时自动锁屏</strong></label><small>键盘、鼠标或触摸操作会重新计时，终端输出不会延长时间。</small></span><div class="security-idle-controls"><select class="select" id="security-idle-minutes" aria-label="自动锁屏时间"><option value="1">1 分钟</option><option value="5" selected>5 分钟</option><option value="10">10 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select><input id="security-idle-lock" type="checkbox" role="switch" checked></div></div>
           <label class="security-option" for="security-away-lock"><span><strong>离开页面立即锁屏</strong><small>切换浏览器标签页或最小化窗口时锁屏。</small></span><input id="security-away-lock" type="checkbox" role="switch"></label>
           <div class="security-option"><span><strong>立即锁屏</strong><small>保留当前连接，输入登录密码后继续。</small></span><button class="btn btn-subtle" id="security-lock-now" type="button">锁屏</button></div>
         </div>

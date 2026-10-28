@@ -68,10 +68,12 @@ Override the default arguments as needed, for example `docker run -d --name xsh 
 
 Open the host-list icon in the toolbar to add, search, edit, or connect to a host. Each account maintains its own list; different accounts can reuse the same alias. Existing aliases are read-only in the editor.
 
-- **Authentication:** save a password or paste private-key contents into the editor. Browser mode does not accept server-side private-key file paths.
+Click a host with a saved password to connect immediately as its configured SSH user; hosts without a saved password still open the connection dialog. The same applies to keyboard selection and recent hosts. Right-click a host for **Connect, Log in as another user, Edit, Share,** or **Delete**. Logging in as another user opens a form for a username and password or private key; deletion requires confirmation.
+
+- **Authentication:** choose password or private key. A new password profile can be saved with an empty password to prompt at connection time; a blank edit preserves an existing saved password. Private keys may be pasted or selected from a local file (up to 64 KB, without a passphrase). The browser reads the file contents; it never sends a local file path for the server to open.
 - **Jump hosts:** select another host from your list. The searchable dropdown supports one-hop forwarding.
 - **Test a password:** use the plug/check icon inside the host-password field. It tests the current address, port, username, and selected jump host without saving the form or opening a terminal. When editing, a blank password uses the saved password. The test uses password authentication and has a 15-second deadline.
-- **Temporary SSH user:** the connection dialog defaults to the configured username. Change it to connect as another user with a password for that connection. It does not reuse the default user's saved password/private key or change the profile.
+- **Temporary SSH user:** the connection dialog defaults to the configured username. Change it to connect as another user with a password or private key for that connection. Both the connection and retry dialogs support pasting a private key or selecting a local key file. It does not reuse the default user's saved password/private key or change the profile.
 
 New server keys require fingerprint confirmation; changed keys are rejected. Password tests trust a new fingerprint for that test only; normal terminal connections save confirmed keys.
 
@@ -79,11 +81,13 @@ New server keys require fingerprint confirmation; changed keys are rejected. Pas
 
 Press **Alt+O** anywhere in the unlocked workspace, including inputs and terminals, to open the host list and focus its search field. Any open dialog closes first. Pressing it again keeps the list open.
 
-**Settings → Security** enables automatic screen locking after five minutes without keyboard, mouse, or touch activity (on by default). Terminal output does not reset the timer. You can also enable immediate locking when switching browser tabs or minimizing the window (off by default), or lock immediately. These preferences are saved per account in the current browser. Locking keeps SSH connections open and requires the login password to resume. Background/sleep time counts toward inactivity; the page checks the deadline again when it becomes active.
+**Settings → Security** enables automatic screen locking after a configurable period without keyboard, mouse, or touch activity (on by default; choose 1, 5, 10, 15, 30, or 60 minutes, default 5). Terminal output does not reset the timer. You can also enable immediate locking when switching browser tabs or minimizing the window (off by default), or lock immediately. These preferences are saved per account in the current browser. Locking keeps SSH connections open and requires the login password to resume. Background/sleep time counts toward inactivity; the page checks the deadline again when it becomes active. While locked, login validity is checked every 30 seconds and immediately when returning to the page. An expired session goes directly to login; network or server errors leave the screen locked.
 
-Click **+** beside the tabs to open a home tab while existing connections stay open. Right-click a tab for **New, Duplicate, Close, Close others, Close all, Vertical split,** and **Horizontal split**.
+Click **+** beside the tabs to open a home tab while existing connections stay open. Drag a tab left or right to reorder it without reconnecting its terminals; keyboard switching follows the displayed order. **Ctrl+Tab** switches to the next workspace tab and **Ctrl+Shift+Tab** to the previous one, wrapping at either end. Browsers may reserve these combinations for browser tabs; use **Alt+PageDown / Alt+PageUp** as alternatives. Right-click a tab for **New, Duplicate, Reconnect, Close, Close others, Close all, Vertical split,** and **Horizontal split**.
 
-Vertical splits place terminals side by side; horizontal splits stack them. Splits can be nested. Duplication and splitting establish a new SSH connection for the current terminal's user; temporary users must enter their password again. Right-click the relevant pane to split that specific terminal.
+Authentication failures open the connection dialog for fresh credentials. Retrying reuses the same terminal pane and tab. **Reconnect** is available for the focused failed or disconnected terminal; it reuses saved credentials when appropriate, otherwise asks for a password or private key. Temporary retry credentials are not saved, and other split panes stay connected.
+
+Vertical splits place terminals side by side; horizontal splits stack them. Splits can be nested. Duplication and splitting establish a new SSH connection for the current terminal's user; temporary users must provide their password or private key again. Right-click the relevant pane to split that specific terminal.
 
 Each split pane has a close button in its upper-right corner. Closing it disconnects only that terminal and expands the remaining layout. Closing a tab disconnects all terminals inside it.
 
