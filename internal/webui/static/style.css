@@ -412,7 +412,8 @@ select.select { appearance: none; background-image: linear-gradient(45deg, trans
 .host-name .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: inline-block; flex: 0 0 auto; }
 .host-name .dot.off { background: var(--tx-3); }
 .host-addr { font-family: "Cascadia Mono",Consolas,monospace; font-size: 11px; color: var(--tx-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.host-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 1px; }
+.host-tags { display: flex; gap: 4px; flex-wrap: wrap; max-height:16px; overflow:hidden; margin-top: 1px; }
+.host-tags .tag { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tag {
   font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 5px;
   background: color-mix(in srgb, var(--acc) 11%, transparent);
@@ -484,7 +485,7 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 .seg input:checked + label { background: var(--bg-1); color: var(--tx-1); box-shadow: 0 1px 4px rgba(0,0,0,.14), 0 0 0 1px var(--line-1); font-weight: 600; }
 .seg input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: 1px; }
 
-.password-save { gap: 8px; }
+.password-save, #row-key { gap: 8px; }
 .password-save .input:disabled { opacity: .55; cursor: not-allowed; background: var(--bg-2); }
 .password-save .input:disabled + .eye { display: none; }
 

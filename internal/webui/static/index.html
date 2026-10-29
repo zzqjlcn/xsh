@@ -87,10 +87,10 @@
       <p class="lead">终端会话以标签页保留，可同时保持多台服务器的连接。新建、编辑与搜索都在右侧主机面板完成。</p>
       <div class="empty-actions">
         <button class="btn btn-primary btn-lg" id="empty-open">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 4v5"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/></svg>
           打开主机列表
         </button>
-        <span class="kbd">快捷键 q 列表 · a 新增</span>
+        <span class="kbd">快捷键 Alt+O 列表 · A 新增</span>
       </div>
       <div class="empty-recent" id="recent-wrap" hidden>
         <span class="lbl">最近使用</span>
@@ -104,6 +104,7 @@
 <div id="tab-context-menu" class="tab-context-menu" role="menu" aria-label="选项卡操作" hidden>
   <button type="button" role="menuitem" data-tab-action="new">新建</button>
   <button type="button" role="menuitem" data-tab-action="duplicate">复制</button>
+  <button type="button" role="menuitem" data-tab-action="rename">重命名</button>
   <button type="button" role="menuitem" data-tab-action="reconnect">重新连接</button>
   <div role="separator"></div>
   <button type="button" role="menuitem" data-tab-action="close">关闭</button>
@@ -164,7 +165,7 @@
       <span><span class="kbd">Enter</span> 连接</span>
       <span><span class="kbd">e</span> 编辑</span>
       <span><span class="kbd">a</span> 新增</span>
-      <span><span class="kbd">q</span> 关闭</span>
+      <span><span class="kbd">Esc</span> 关闭</span>
     </div>
   </div>
 </aside>
@@ -335,6 +336,16 @@
     <div class="dlg-head"><h2 id="key-view-title">私钥内容</h2><button class="icon-btn" type="button" data-close="dlg-key-view" aria-label="关闭私钥内容">×</button></div>
     <div class="dlg-body"><pre id="key-view-content" tabindex="0"></pre></div>
     <div class="dlg-foot"><span class="spacer"></span><button class="btn btn-subtle" type="button" data-close="dlg-key-view">关闭</button></div>
+  </div>
+</dialog>
+
+<dialog id="dlg-tab-rename" aria-labelledby="tab-rename-title">
+  <div class="dlg dlg-sm">
+    <div class="dlg-head"><h2 id="tab-rename-title">重命名标签页</h2><button class="icon-btn" type="button" data-close="dlg-tab-rename" aria-label="关闭重命名">×</button></div>
+    <form id="tab-rename-form">
+      <div class="dlg-body"><div class="field"><label for="tab-rename-name">标签页名称</label><input class="input" id="tab-rename-name" required maxlength="128" autocomplete="off"></div></div>
+      <div class="dlg-foot"><span class="spacer"></span><button class="btn btn-subtle" type="button" data-close="dlg-tab-rename">取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+    </form>
   </div>
 </dialog>
 

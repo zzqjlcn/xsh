@@ -59,14 +59,21 @@ func TestHostLifecycle(t *testing.T) {
 	if w := request("PUT", update, auth.Token); w.Code != 204 {
 		t.Fatalf("update: %d %s", w.Code, w.Body.String())
 	}
-	host, err = webstore.FindHost(user.ID, alias)
+	host, err = webstore.FindHost(user.ID, "renamed")
 	if err != nil || host.Hostname != "example.test" || !host.SavePassword {
 		t.Fatal("update lost profile")
 	}
-	if w := request("DELETE", `{"original":"`+alias+`"}`, auth.Token); w.Code != 204 {
+	if _, err := webstore.FindHost(user.ID, alias); err != webstore.ErrNotFound {
+		t.Fatal("old name still exists")
+	}
+	secret, err = webstore.ReadSecret(user.ID, key, "renamed")
+	if err != nil || secret.Password != "saved-password" {
+		t.Fatal("rename lost password")
+	}
+	if w := request("DELETE", `{"original":"renamed"}`, auth.Token); w.Code != 204 {
 		t.Fatalf("delete: %d", w.Code)
 	}
-	if _, err := webstore.FindHost(user.ID, alias); err != webstore.ErrNotFound {
+	if _, err := webstore.FindHost(user.ID, "renamed"); err != webstore.ErrNotFound {
 		t.Fatal("host not deleted")
 	}
 	if w := request("PUT", update, auth.Token); w.Code != 404 {

@@ -174,12 +174,12 @@ function filteredHosts() {
 }
 const PENCIL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m13.5 6.5 3 3"/></svg>';
 function hostRowHTML(h, i) {
-  const firstTag = (h.tags || []).slice(0, 2);
+  const hostTags = h.tags || [];
   const initial = escapeHtml((h.name || '?').charAt(0).toUpperCase());
   const when = escapeHtml(h.last_login ? timeAgo(h.last_login) : '从未');
   const dot = isSessionActive(h.name) ? '' : ' off';
   const savedPassword = h.save_password ? '<span class="host-saved-password" role="img" aria-label="已保存密码" title="已保存密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-4-4 3-3m-6 0 3-3"/></svg></span>' : '';
-  const tags = firstTag.length ? `<span class="host-tags">${firstTag.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</span>` : '';
+  const tags = hostTags.length ? `<span class="host-tags">${hostTags.map(t => `<span class="tag" title="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('')}</span>` : '';
   return `<div class="host-item${i === selectedIdx ? ' sel' : ''}" data-idx="${i}" role="button" tabindex="0" aria-label="连接 ${escapeHtml(h.name)}">
     <span class="av" data-host="${escapeHtml(h.name)}">${initial}</span>
     <span class="host-main">
@@ -316,7 +316,7 @@ document.addEventListener('keydown', event => {
   if (appEl.hidden) return;
   if (document.querySelector('dialog[open]')) return;
   if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
-  if (event.key === '/' || event.key === 'q' || event.key === 'Q') {
+  if (event.key === '/') {
     event.preventDefault();
     drawerOpen() ? closeDrawer() : openDrawer();
   }
@@ -527,7 +527,7 @@ function openHostModal(host, shareId = 0) {
   document.querySelector('#jump-value').textContent = jump.value || '不使用跳板'; setJumpOpen(false);
   if (host) {
     for (const key of ['name', 'hostname', 'user', 'port']) hostField(key).value = host[key] ?? '';
-    hostField('name').readOnly = editing;
+    hostField('name').readOnly = false;
     hostField('tags').value = (host.tags || []).join(', ');
     hostField('auth_type').value = host.auth_type === 'private_key' ? 'private_key' : 'password';
     hostField('password').placeholder = host.save_password ? '留空则保留当前已保存密码' : '留空则在连接时输入';
@@ -557,6 +557,7 @@ hostForm.onsubmit = async event => {
   await mutateHost(editingOriginal ? 'PUT' : 'POST', host, password, privateKey);
 };
 async function mutateHost(method, host, password = '', privateKey = '') {
+  const original = editingOriginal;
   const response = await fetch('api/hosts', {
     method,
     headers: { 'Content-Type': 'application/json', 'X-XSH-Token': token },
@@ -567,6 +568,12 @@ async function mutateHost(method, host, password = '', privateKey = '') {
     const msg = document.querySelector(method === 'DELETE' ? '#confirm-msg' : '#host-msg');
     msg.textContent = await response.text(); msg.className = 'form-msg error';
     return;
+  }
+  if (method === 'PUT' && original !== host.name.trim()) {
+    const name = host.name.trim();
+    for (const session of sessions.values()) if (session.host === original) session.host = name;
+    for (const group of workspaceTabs.values()) updateTabLabel(group);
+    if (connectHost === original) connectHost = name;
   }
   if (hostDialog.open) hostDialog.close();
   if (confirmDialog.open) confirmDialog.close();
@@ -691,7 +698,7 @@ function createWorkspaceTab(label = '主页') {
   const id = `tab-${nextTabId++}`, tab = document.createElement('div');
   tab.className = 'tab'; tab.setAttribute('role', 'tab'); tab.tabIndex = -1; tab.id = id;tab.setAttribute('aria-controls','empty-state');
   tab.innerHTML = `<span class="tab-state"></span><span class="tab-label">${escapeHtml(label)}</span><button class="tab-close" type="button" title="关闭 ${escapeHtml(label)}" aria-label="关闭 ${escapeHtml(label)}">✕</button>`;
-  const group = {id, tab, root:null, sessionIds:new Set(), focused:''}; workspaceTabs.set(id, group); tabstrip.append(tab);
+  const group = {id, tab, root:null, sessionIds:new Set(), focused:'', customLabel:'', defaultLabel:label}; workspaceTabs.set(id, group); tabstrip.append(tab);
   tab.draggable = true;
   tab.addEventListener('pointerdown', event => { tab.draggable = event.button === 0 && !event.target.closest('.tab-close'); });
   tab.addEventListener('dragstart', event => {
@@ -714,10 +721,17 @@ function createWorkspaceTab(label = '主页') {
   tab.querySelector('.tab-close').onclick = event => {event.stopPropagation();closeWorkspaceTab(id);};
   return group;
 }
+function updateTabLabel(group) {
+  const label = group.customLabel || sessions.get(group.focused)?.host || group.defaultLabel;
+  group.tab.querySelector('.tab-label').textContent = label;
+  group.tab.title = label;
+  const close = group.tab.querySelector('.tab-close'); close.title = `关闭 ${label}`; close.setAttribute('aria-label', `关闭 ${label}`);
+}
 function activateWorkspaceTab(id) {
   const group = workspaceTabs.get(id); if (!group) return;
   activeTabId = id; activeSessionId = group.focused;
-  const focused=sessions.get(group.focused);if(focused) {group.tab.dataset.st=focused.state;group.tab.querySelector('.tab-label').textContent=focused.host;group.tab.title=focused.host;const close=group.tab.querySelector('.tab-close');close.title=`关闭 ${focused.host}`;close.setAttribute('aria-label',`关闭 ${focused.host}`);}
+  const focused=sessions.get(group.focused);if(focused) group.tab.dataset.st=focused.state;
+  updateTabLabel(group);
   for (const item of workspaceTabs.values()) {
     const active = item.id === id; item.tab.setAttribute('aria-selected', String(active)); item.tab.tabIndex = active ? 0 : -1;
     if (item.root) item.root.hidden = !active;
@@ -736,7 +750,8 @@ function closeWorkspaceTab(id) {
 }
 function setSessionState(session, state, label) {
   session.state = state;
-  if(workspaceTabs.get(session.tabId)?.focused===session.id) {session.tab.dataset.st = state;session.tab.title = `${session.host} · ${label}`;}
+  const group = workspaceTabs.get(session.tabId);
+  if(group?.focused===session.id) {session.tab.dataset.st = state;session.tab.title = `${group.customLabel || session.host} · ${label}`;}
   updateUploadButton();
   if (screenLocked) updateScreenLockInfo();
 }
@@ -751,6 +766,15 @@ function activateSession(id) {
 }
 
 const tabMenu=document.querySelector('#tab-context-menu');let contextTabId='';
+const tabRenameDialog = document.querySelector('#dlg-tab-rename'), tabRenameName = document.querySelector('#tab-rename-name');
+let renamingTabId = '';
+tabRenameDialog.addEventListener('close', () => { renamingTabId = ''; tabRenameName.value = ''; });
+document.querySelector('#tab-rename-form').onsubmit = event => {
+  event.preventDefault();
+  const group = workspaceTabs.get(renamingTabId), name = tabRenameName.value.trim();
+  if (!group || !name || screenLocked) return;
+  group.customLabel = name; updateTabLabel(group); tabRenameDialog.close();
+};
 function closeTabMenu() {tabMenu.hidden=true;contextTabId='';}
 function openTabMenu(id,x,y) {
   closeHostMenu();
@@ -767,6 +791,10 @@ tabMenu.addEventListener('click',event=>{
   const button=event.target.closest('[data-tab-action]'), action=button?.dataset.tabAction,group=workspaceTabs.get(contextTabId);if(!action||!group||button.disabled||screenLocked)return;
   const id=group.id;closeTabMenu();
   if(action==='new')newHomeTab();
+  else if(action==='rename') {
+    renamingTabId = id; tabRenameName.value = group.tab.querySelector('.tab-label').textContent;
+    tabRenameDialog.showModal(); tabRenameName.focus(); tabRenameName.select();
+  }
   else if(action==='reconnect')reconnectTerminal(sessions.get(group.focused));
   else if(action==='close')closeWorkspaceTab(id);
   else if(action==='close-others') {for(const other of [...workspaceTabs.keys()])if(other!==id)closeWorkspaceTab(other);activateWorkspaceTab(id);}
@@ -833,7 +861,7 @@ function openTerminal(host, password, placement = null, username = hosts.find(it
   const source = placement?.sessionId && sessions.get(placement.sessionId);
   let group = source ? workspaceTabs.get(source.tabId) : !placement && !workspaceTabs.get(activeTabId)?.sessionIds.size ? workspaceTabs.get(activeTabId) : null;
   if(!group) group=createWorkspaceTab(host);
-  const tab=group.tab; tab.dataset.st='connecting';tab.querySelector('.tab-label').textContent=host;
+  const tab=group.tab; tab.dataset.st='connecting';updateTabLabel(group);
   const pane = document.createElement('div');
   pane.className = 'pane'; pane.id = id; pane.setAttribute('role', 'tabpanel');
   pane.setAttribute('aria-label',host);pane.setAttribute('aria-labelledby',group.id);

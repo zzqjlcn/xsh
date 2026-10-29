@@ -289,9 +289,13 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == "PUT" {
-			input.Host.Name = input.Original
+			if input.Host.Name == "" {
+				input.Host.Name = input.Original
+			}
+			err = webstore.UpdateHost(session.User.ID, session.Key, input.Original, input.Host, webstore.Secret{Password: input.Password, PrivateKey: input.PrivateKey})
+		} else {
+			err = webstore.SaveHost(session.User.ID, session.Key, input.Host, webstore.Secret{Password: input.Password, PrivateKey: input.PrivateKey}, false, input.ShareID)
 		}
-		err = webstore.SaveHost(session.User.ID, session.Key, input.Host, webstore.Secret{Password: input.Password, PrivateKey: input.PrivateKey}, r.Method == "PUT", input.ShareID)
 	}
 	if err != nil {
 		status := 400

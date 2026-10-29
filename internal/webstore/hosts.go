@@ -99,6 +99,14 @@ func decodeSecret(userID int64, key []byte, name string, encrypted []byte) (Secr
 }
 
 func SaveHost(userID int64, key []byte, host config.SSHHost, secret Secret, update bool, shareID int64) error {
+	return saveHostChange(userID, key, host.Name, host, secret, update, shareID)
+}
+
+func UpdateHost(userID int64, key []byte, original string, host config.SSHHost, secret Secret) error {
+	return saveHostChange(userID, key, original, host, secret, true, 0)
+}
+
+func saveHostChange(userID int64, key []byte, original string, host config.SSHHost, secret Secret, update bool, shareID int64) error {
 	db, err := database.Open()
 	if err != nil {
 		return err
@@ -109,12 +117,17 @@ func SaveHost(userID int64, key []byte, host config.SSHHost, secret Secret, upda
 		return err
 	}
 	defer tx.Rollback()
-	if err := saveHost(tx, userID, key, host, secret, update, shareID); err != nil {
+	if err := saveHostAs(tx, userID, key, original, host, secret, update, shareID); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 func saveHost(tx *sql.Tx, userID int64, key []byte, host config.SSHHost, input Secret, update bool, shareID int64) error {
+	return saveHostAs(tx, userID, key, host.Name, host, input, update, shareID)
+}
+
+func saveHostAs(tx *sql.Tx, userID int64, key []byte, original string, host config.SSHHost, input Secret, update bool, shareID int64) error {
+	original = strings.TrimSpace(original)
 	host.Name = strings.TrimSpace(host.Name)
 	host.Hostname = strings.TrimSpace(host.Hostname)
 	host.User = strings.TrimSpace(host.User)
@@ -136,7 +149,7 @@ func saveHost(tx *sql.Tx, userID int64, key []byte, host config.SSHHost, input S
 	var oldRaw string
 	var oldCipher []byte
 	var old Host
-	err := tx.QueryRow(`SELECT data,secret FROM web_hosts WHERE user_id=? AND name=?`, userID, host.Name).Scan(&oldRaw, &oldCipher)
+	err := tx.QueryRow(`SELECT data,secret FROM web_hosts WHERE user_id=? AND name=?`, userID, original).Scan(&oldRaw, &oldCipher)
 	exists := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -147,6 +160,15 @@ func saveHost(tx *sql.Tx, userID int64, key []byte, host config.SSHHost, input S
 	if !update && exists {
 		return ErrConflict
 	}
+	if update && !strings.EqualFold(original, host.Name) {
+		var count int
+		if err := tx.QueryRow(`SELECT count(*) FROM web_hosts WHERE user_id=? AND name=?`, userID, host.Name).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrConflict
+		}
+	}
 	secret := Secret{}
 	if exists {
 		if err := json.Unmarshal([]byte(oldRaw), &old); err != nil {
@@ -156,7 +178,6 @@ func saveHost(tx *sql.Tx, userID int64, key []byte, host config.SSHHost, input S
 		if err != nil {
 			return err
 		}
-		host.Name = old.Name
 		host.LastLogin = old.LastLogin
 	} else {
 		host.LastLogin = 0
@@ -205,17 +226,61 @@ func saveHost(tx *sql.Tx, userID int64, key []byte, host config.SSHHost, input S
 		return err
 	}
 	if update {
-		_, err = tx.Exec(`UPDATE web_hosts SET data=?,secret=? WHERE user_id=? AND name=?`, string(data), encrypted, userID, host.Name)
+		_, err = tx.Exec(`UPDATE web_hosts SET name=?,data=?,secret=? WHERE user_id=? AND name=?`, host.Name, string(data), encrypted, userID, original)
 	} else {
 		_, err = tx.Exec(`INSERT INTO web_hosts(user_id,name,data,secret) VALUES(?,?,?,?)`, userID, host.Name, string(data), encrypted)
 	}
 	if err != nil {
 		return err
 	}
+	if update && original != host.Name {
+		if err := renameJumpReferences(tx, userID, original, host.Name); err != nil {
+			return err
+		}
+	}
 	if shareID != 0 {
 		_, err = tx.Exec(`DELETE FROM web_shares WHERE id=? AND recipient_id=?`, shareID, userID)
 	}
 	return err
+}
+
+func renameJumpReferences(tx *sql.Tx, userID int64, original, name string) error {
+	rows, err := tx.Query(`SELECT data FROM web_hosts WHERE user_id=?`, userID)
+	if err != nil {
+		return err
+	}
+	var changed []Host
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var host Host
+		if err := json.Unmarshal([]byte(raw), &host); err != nil {
+			rows.Close()
+			return err
+		}
+		if strings.EqualFold(host.ProxyJump, original) {
+			host.ProxyJump = name
+			changed = append(changed, host)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, host := range changed {
+		data, err := json.Marshal(host)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE web_hosts SET data=? WHERE user_id=? AND name=?`, string(data), userID, host.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func DeleteHost(userID int64, name string) error {
