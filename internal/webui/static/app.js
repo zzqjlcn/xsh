@@ -937,7 +937,7 @@ function connectTerminal(session, password, credentials = {}) {
     if (data.type === 'trust') sendTerminal(session, { type: 'trust', trust: confirm(`首次连接 ${data.message}\n\n密钥类型：${data.key_type}\n指纹：${data.fingerprint}\n\n确认信任并保存该主机密钥？`) });
   };
   socket.onerror = () => { if (current()) setSessionState(session, 'error', '连接出错'); };
-  socket.onclose = () => { password = ''; privateKey = ''; if (current() && ['connected','connecting'].includes(session.state)) setSessionState(session, 'closed', '已断开'); };
+  socket.onclose = () => { password = ''; privateKey = ''; if (current() && ['connected','connecting'].includes(session.state)) { setSessionState(session, 'closed', '已断开'); checkLockedSession(true); } };
 }
 function sendTerminal(session, message) { if (screenLocked && message.type === 'input') return; if (session.socket?.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify(message)); }
 function closeSession(id) {
@@ -1023,6 +1023,29 @@ function showScreenLock() {
 const securityIdleLock = document.querySelector('#security-idle-lock');
 const securityIdleMinutes = document.querySelector('#security-idle-minutes');
 const securityAwayLock = document.querySelector('#security-away-lock');
+const securitySessionHours = document.querySelector('#security-session-hours');
+let savedSessionHours = 12;
+async function loadSessionSettings() {
+  const generation = authGeneration;
+  securitySessionHours.disabled = true;
+  try {
+    const settings = await accountRequest('api/account/security');
+    if (generation !== authGeneration || !currentUser) return;
+    savedSessionHours = settings.session_hours; securitySessionHours.value = String(savedSessionHours);
+    securitySessionHours.disabled = false;
+  } catch (error) { if (generation === authGeneration) document.querySelector('#security-msg').textContent = error.message; }
+}
+securitySessionHours.addEventListener('change', async () => {
+  const generation = authGeneration, message = document.querySelector('#security-msg');
+  securitySessionHours.disabled = true; message.textContent = ''; message.classList.remove('success');
+  try {
+    const settings = await accountRequest('api/account/security','PUT',{session_hours:Number(securitySessionHours.value)});
+    if (generation !== authGeneration) return;
+    savedSessionHours = settings.session_hours; message.classList.add('success'); message.textContent = '已保存，当前登录有效期已重新计时。';
+  } catch (error) {
+    if (generation === authGeneration) { securitySessionHours.value = String(savedSessionHours); message.textContent = error.message; }
+  } finally { if (generation === authGeneration && currentUser) securitySessionHours.disabled = false; }
+});
 let securitySettingsKey = '', lastSecurityActivity = Date.now(), lockNeedsSync = false, lockRequest = null, lastLockAttempt = 0;
 const securityIdleOptions = [1, 5, 10, 15, 30, 60];
 function idleLockMinutes() {
@@ -1032,7 +1055,7 @@ function idleLockMinutes() {
 let lockedSessionCheck = null, lastLockedSessionCheck = 0;
 const lockedSessionCheckInterval = 30 * 1000;
 function checkLockedSession(force = false) {
-  if (!currentUser || !screenLocked || lockedSessionCheck) return lockedSessionCheck;
+  if (!currentUser || lockedSessionCheck) return lockedSessionCheck;
   if (!force && Date.now() - lastLockedSessionCheck < lockedSessionCheckInterval) return;
   const generation = authGeneration;
   const controller = new AbortController();
@@ -1043,7 +1066,7 @@ function checkLockedSession(force = false) {
       const response = await fetch('api/auth/status', {cache:'no-store', signal:controller.signal});
       if (!response.ok) return;
       const status = await response.json();
-      if (generation !== authGeneration || !screenLocked) return;
+      if (generation !== authGeneration) return;
       if (status.authenticated === false) await lockView(status);
     } catch (_) {
       // A network/server failure does not establish that the session expired.
@@ -1099,6 +1122,7 @@ function lockWorkspace() {
 }
 function checkSecurityLock() {
   if (!currentUser) return;
+  checkLockedSession();
   if (screenLocked) {
     checkLockedSession();
     if (lockNeedsSync && Date.now() - lastLockAttempt >= 5000) lockWorkspace();
@@ -1495,6 +1519,7 @@ async function selectSettingsTab(tab) {
   document.querySelector('#account-msg').textContent = '';
   if (tab === 'users') { try { await loadUsers(); } catch(error) { document.querySelector('#account-msg').textContent = error.message; } }
   if (tab === 'about') await loadAbout();
+  if (tab === 'security') await loadSessionSettings();
 }
 for (const button of document.querySelectorAll('[data-settings-tab]')) button.addEventListener('click', () => selectSettingsTab(button.dataset.settingsTab));
 document.querySelector('#users-search').addEventListener('input',renderUsers);

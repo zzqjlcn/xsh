@@ -25,12 +25,14 @@ import (
 
 type sessionContextKey struct{}
 type webSession struct {
-	ID, Token string
-	User      webstore.User
-	Key       []byte
-	Context   context.Context
-	cancel    context.CancelFunc
-	locked    bool // protected by server.auth
+	ID, Token   string
+	User        webstore.User
+	Key         []byte
+	Context     context.Context
+	cancel      context.CancelFunc
+	locked      bool        // protected by server.auth
+	expiresAt   time.Time   // protected by server.auth
+	expiryTimer *time.Timer // protected by server.auth
 }
 
 func (s *server) sessionLocked(session *webSession) bool {
@@ -127,11 +129,12 @@ func (s *server) lookupSession(r *http.Request) *webSession {
 	}
 	s.auth.Lock()
 	session := s.auth.sessions[cookie.Value]
+	expired := session != nil && !session.expiresAt.IsZero() && !time.Now().Before(session.expiresAt)
 	s.auth.Unlock()
 	if session == nil {
 		return nil
 	}
-	if session.Context.Err() != nil || !webstore.SessionValid(session.User) {
+	if expired || session.Context.Err() != nil || !webstore.SessionValid(session.User) {
 		s.revokeSession(session)
 		return nil
 	}
@@ -147,7 +150,11 @@ func (s *server) newSession(user webstore.User, key []byte) (*webSession, error)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
+	hours, err := webstore.SessionHours(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	session := &webSession{ID: id, Token: token, User: user, Key: key, Context: ctx, cancel: cancel}
 	s.auth.Lock()
 	defer s.auth.Unlock()
@@ -160,11 +167,31 @@ func (s *server) newSession(user webstore.User, key []byte) (*webSession, error)
 		}
 	}
 	s.auth.sessions[id] = session
+	s.resetSessionExpiryLocked(session, time.Duration(hours)*time.Hour)
 	return session, nil
+}
+func (s *server) resetSessionExpiryLocked(session *webSession, duration time.Duration) {
+	session.expiresAt = time.Now().Add(duration)
+	if session.expiryTimer != nil {
+		session.expiryTimer.Stop()
+	}
+	session.expiryTimer = time.AfterFunc(duration, func() {
+		s.auth.Lock()
+		if time.Now().Before(session.expiresAt) || session.Context.Err() != nil {
+			s.auth.Unlock()
+			return
+		}
+		delete(s.auth.sessions, session.ID)
+		session.cancel()
+		s.auth.Unlock()
+	})
 }
 func (s *server) revokeSession(session *webSession) {
 	s.auth.Lock()
 	delete(s.auth.sessions, session.ID)
+	if session.expiryTimer != nil {
+		session.expiryTimer.Stop()
+	}
 	s.auth.Unlock()
 	session.cancel()
 	s.uploads.Range(func(_, value any) bool {
@@ -321,7 +348,10 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	delete(s.auth.attempts, ip)
 	s.auth.Unlock()
 	secure := r.TLS != nil || sameOrigin(r) && strings.HasPrefix(r.Header.Get("Origin"), "https://")
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session.ID, Path: s.rootPath, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: 12 * 60 * 60})
+	s.auth.Lock()
+	maxAge := int(time.Until(session.expiresAt).Seconds()) + 1
+	s.auth.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session.ID, Path: s.rootPath, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, MaxAge: maxAge})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
 		Token string        `json:"token"`

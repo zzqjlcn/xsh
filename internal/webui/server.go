@@ -233,6 +233,10 @@ func (s *server) api(w http.ResponseWriter, r *http.Request) {
 		s.changeLoginPassword(w, r)
 		return
 	}
+	if r.URL.Path == "/api/account/security" {
+		s.securitySettings(w, r)
+		return
+	}
 	if r.URL.Path == "/api/shares" || r.URL.Path == "/api/share-recipients" {
 		s.shares(w, r)
 		return

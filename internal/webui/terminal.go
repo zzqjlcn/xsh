@@ -76,6 +76,25 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-actor.Context.Done():
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
 	stopSession := context.AfterFunc(actor.Context, func() { _ = conn.Close() })
 	defer stopSession()
 	conn.SetReadLimit(1 << 20)
@@ -196,6 +215,8 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	defer s.passwordTargets.Delete(connectionID)
 	defer s.uploads.Delete(connectionID)
 	writer.send(terminalMessage{Type: "connected", Message: "connected", Session: connectionID, User: host.User})
+	keepAlive := time.NewTicker(30 * time.Second)
+	defer keepAlive.Stop()
 	done := make(chan error, 1)
 	go func() { done <- session.Wait() }()
 	messages := make(chan terminalMessage, 16)
@@ -218,6 +239,11 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	}()
 	for {
 		select {
+		case <-keepAlive.C:
+			// No reply is required; unsupported keepalive requests must not end a session.
+			if _, _, err := connection.Client.SendRequest("keepalive@openssh.com", false, nil); err != nil {
+				return
+			}
 		case err := <-done:
 			message := "连接已关闭。"
 			if err != nil && !errors.Is(err, io.EOF) {

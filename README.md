@@ -109,7 +109,7 @@ Accepted shares are independent copies. Sender edits or deletion do not affect t
 
 **Lock** hides the workspace and requires the current account password to resume, keeping existing SSH connections, terminal buffers, and transfers. Terminal input and new API operations are blocked while locked; remote output continues. **Log out** closes that login session's connections. Refreshing or closing the page disconnects its terminals, including when the screen is locked.
 
-Login sessions last up to 12 hours and expire when xsh restarts. Changing an account password or disabling an account revokes all of its sessions. Changing the login password preserves saved credentials. Administrator password reset/account-key recovery is not currently available.
+Login sessions default to 12 hours. **Settings → Security → Login session lifetime** offers 1, 4, 8, or 12 hours and 1, 3, 7, or 30 days. The account stores this preference for future logins; saving restarts the current login's lifetime from now. Other existing logins keep their original expiration. Expiration logs out and closes that login's host connections. Locking or moving the page to the background does not end connections; server-side WebSocket and SSH keepalives reduce idle disconnects by proxies and network devices. Network failures, remote session termination, logout, page refresh/closure, and xsh restart can still disconnect terminals. Changing an account password or disabling an account revokes all of its sessions. Changing the login password preserves saved credentials. Administrator password reset/account-key recovery is not currently available.
 
 ### File transfers
 

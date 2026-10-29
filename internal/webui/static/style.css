@@ -720,6 +720,7 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 .security-option input:checked::after { transform:translateX(14px); background:var(--bg-0); }
 .security-option input:focus-visible { outline:2px solid var(--acc); outline-offset:4px; }
 .security-note { color:var(--tx-3); font-size:11px; line-height:1.8; margin:20px 0 0; }
+#security-msg.success { color:var(--ok); }
 .theme-option { text-align:left; padding:9px; border:1px solid var(--line-2); border-radius:10px; background:transparent; color:var(--tx-2); cursor:pointer; transition:border-color .15s,box-shadow .15s; }
 .theme-option:hover { border-color:var(--tx-3); }
 .theme-option[aria-pressed="true"] { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }

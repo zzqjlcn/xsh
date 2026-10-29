@@ -66,7 +66,9 @@ func Open() (*sql.DB, error) {
  data TEXT NOT NULL, secret BLOB NOT NULL, PRIMARY KEY(user_id,name));
  CREATE TABLE IF NOT EXISTS web_shares (
  id INTEGER PRIMARY KEY, sender_id INTEGER NOT NULL, recipient_id INTEGER NOT NULL,
- data TEXT NOT NULL, created_at INTEGER NOT NULL);`)
+ data TEXT NOT NULL, created_at INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS web_user_security (
+ user_id INTEGER PRIMARY KEY, session_hours INTEGER NOT NULL);`)
 	if err == nil {
 		err = migrate(tx, filepath.Dir(path))
 	}

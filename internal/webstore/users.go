@@ -280,6 +280,9 @@ func DeleteUser(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM web_hosts WHERE user_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM web_user_security WHERE user_id=?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM web_shares WHERE sender_id=? OR recipient_id=?`, id, id); err != nil {
 		return err
 	}
