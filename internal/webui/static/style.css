@@ -564,8 +564,9 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 #cc-av { background: var(--bg-2); border-color: var(--line-2); }
 
 /* 终端面板内边距 + xterm 背景联动主题 */
-.pane { box-sizing: border-box; padding: 8px 10px; }
-.xterm { height: 100%; }
+/* FitAddon subtracts the terminal's padding, not its parent's padding. */
+.pane { box-sizing: border-box; padding: 0; }
+.xterm { height: 100%; padding: 8px 10px; }
 .xterm .xterm-viewport { background: var(--term-bg) !important; }
 
 
@@ -583,7 +584,7 @@ dialog::backdrop { background: rgba(4, 7, 12, .55); backdrop-filter: blur(3px); 
 .terminal-split .pane.focused { box-shadow:inset 0 0 0 1px var(--acc); }
 .pane-close { display:none; position:absolute; top:4px; right:6px; z-index:2; width:22px; height:22px; padding:3px; border:0; border-radius:5px; background:transparent; color:var(--tx-3); cursor:pointer; }
 .pane-close svg { display:block; width:16px; height:16px; }
-.terminal-split .pane { padding-top:28px; }
+.terminal-split .pane .xterm { padding-top:28px; }
 .terminal-split .pane > .pane-close { display:block; }
 .pane-close:hover { color:var(--err); background:color-mix(in srgb, var(--err) 12%, transparent); }
 .pane-close:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
